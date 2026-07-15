@@ -1,0 +1,28 @@
+# Vemobile
+.vscode/
+.idea/
+*.iml
+
+# Flutter
+vemobile/.dart_tool/
+vemobile/.packages
+vemobile/.flutter-plugins
+vemobile/.flutter-plugins-dependencies
+vemobile/build/
+vemobile/ios/Pods/
+vemobile/ios/.symlinks/
+vemobile/android/.gradle/
+vemobile/android/app/build/
+vemobile/android/local.properties
+
+# Vencord bundle
+vencord-mobile-bundle/node_modules/
+vencord-mobile-bundle/dist/*.map
+vencord-mobile-bundle/dist/*.LEGAL.txt
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env

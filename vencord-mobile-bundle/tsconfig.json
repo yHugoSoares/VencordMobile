@@ -1,0 +1,21 @@
+{
+    "compilerOptions": {
+        "module": "esnext",
+        "moduleResolution": "bundler",
+        "target": "ESNEXT",
+        "jsx": "preserve",
+        "strict": true,
+        "esModuleInterop": true,
+        "skipLibCheck": true,
+        "paths": {
+            "@api/*": ["./src-mobile/api/*"],
+            "@components/*": ["./src-mobile/components/*"],
+            "@utils/*": ["./src-mobile/utils/*"],
+            "@plugins/*": ["./src-mobile/plugins/*"],
+            "@webpack/*": ["./src-mobile/webpack/*"]
+        },
+        "outDir": "dist"
+    },
+    "include": ["src-mobile/**/*", "scripts/**/*"],
+    "exclude": ["node_modules", "dist"]
+}

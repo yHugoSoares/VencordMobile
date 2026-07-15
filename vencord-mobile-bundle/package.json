@@ -1,0 +1,23 @@
+{
+    "name": "vemobile-bundle",
+    "private": true,
+    "version": "0.1.0",
+    "description": "Vemobile — Vencord-compatible mod bundle for mobile Discord WebView",
+    "license": "GPL-3.0-or-later",
+    "scripts": {
+        "build": "node scripts/build/vemobile.mjs",
+        "watch": "node scripts/build/vemobile.mjs --watch",
+        "dev": "npm run watch",
+        "lint": "eslint src-mobile"
+    },
+    "dependencies": {
+        "@intrnl/xxhash64": "^0.1.2",
+        "fflate": "^0.8.3",
+        "nanoid": "^5.1.0"
+    },
+    "devDependencies": {
+        "@types/node": "^26.0.1",
+        "esbuild": "^0.28.1",
+        "typescript": "^5.7.0"
+    }
+}
