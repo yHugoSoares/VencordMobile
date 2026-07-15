@@ -21,6 +21,7 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _createWebView();
   }
 
   @override
