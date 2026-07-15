@@ -1,44 +1,31 @@
 /**
- * Vemobile Prelude — Runs before Vencord bundle
- * Detects mobile environment and sets up hooks for the Vencord bundle.
+ * Vemobile Prelude — Runs before Vencord bundle.
+ * Detects mobile, injects viewport + base CSS, sets up bridge.
  */
 (function () {
-  // Detect mobile WebView
+  // Detect platform
   var ua = navigator.userAgent || "";
   var isAndroid = /Android/i.test(ua);
   var isIOS = /iPhone|iPad|iPod/i.test(ua);
-  var isMobileWebView = isAndroid || isIOS;
 
   window.__VEMOBILE__ = {
     platform: isAndroid ? "android" : isIOS ? "ios" : "unknown",
-    isMobile: isMobileWebView,
+    isMobile: true,
     version: "0.1.0",
-
-    // Bridge to Flutter (postMessage to WebView host)
     sendToNative: function (type, data) {
       try {
         window.VemobileBridge &&
           window.VemobileBridge.postMessage(JSON.stringify({ type: type, data: data }));
-      } catch (e) {
-        console.warn("[Vemobile] Failed to send to native:", e);
-      }
+      } catch (e) {}
     },
-
-    // Callbacks registered by native side
     callbacks: {},
-
-    // Called by native to invoke a JS callback
     receiveFromNative: function (id, data) {
       var cb = window.__VEMOBILE__.callbacks[id];
       if (cb) cb(data);
     },
-
-    // Register a callback for native to call
     registerCallback: function (type, cb) {
       window.__VEMOBILE__.callbacks[type] = cb;
     },
-
-    // Promise-based call to native
     callNative: function (method, args) {
       return new Promise(function (resolve, reject) {
         var callId = "nc_" + Date.now() + "_" + Math.random().toString(36).slice(2);
@@ -48,56 +35,157 @@
           else resolve(result && result.value);
         };
         window.__VEMOBILE__.sendToNative("bridge", {
-          id: callId,
-          method: method,
-          args: args || [],
+          id: callId, method: method, args: args || [],
         });
       });
     },
   };
 
-  // Hook into VencordNative setter to patch it
-  var _origDescriptor = Object.getOwnPropertyDescriptor(window, "VencordNative");
+  // --- Inject viewport meta ---
+  var vp = document.querySelector('meta[name="viewport"]');
+  if (!vp) {
+    vp = document.createElement("meta");
+    vp.name = "viewport";
+    document.head.appendChild(vp);
+  }
+  vp.content = "width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover";
+
+  // --- Override WebRTC / media support detection ---
+  // Discord checks for RTCPeerConnection and getUserMedia. WebView may have
+  // restricted support. Force-enable to allow call UI to at least attempt.
+  var origGUM = navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
+  if (!navigator.mediaDevices) {
+    navigator.mediaDevices = {};
+  }
+  if (!navigator.mediaDevices.getUserMedia) {
+    navigator.mediaDevices.getUserMedia = function (constraints) {
+      return new Promise(function (resolve, reject) {
+        reject(new Error("Vemobile: getUserMedia not supported in WebView. Try opening in native Discord app for calls."));
+      });
+    };
+  }
+  if (!window.RTCPeerConnection) {
+    window.RTCPeerConnection = function () {
+      throw new Error("Vemobile: WebRTC not supported in this WebView. Voice/video calls require the native Discord app.");
+    };
+  }
+  if (!window.webkitRTCPeerConnection) {
+    window.webkitRTCPeerConnection = window.RTCPeerConnection;
+  }
+
+  // --- Hook VencordNative setter to patch in mobile APIs ---
   var _vcNative = null;
   Object.defineProperty(window, "VencordNative", {
-    get: function () {
-      return _vcNative;
-    },
+    get: function () { return _vcNative; },
     set: function (v) {
       _vcNative = v;
-      // Patch in mobile-specific methods
+      if (_vcNative && _vcNative.native) {
+        _vcNative.native.openExternal = function (url) {
+          window.__VEMOBILE__.sendToNative("openUrl", { url: url });
+        };
+      }
       if (_vcNative) {
-        // Override openExternal to use mobile bridge
-        var origOpenExternal = _vcNative.native && _vcNative.native.openExternal;
-        if (_vcNative.native) {
-          _vcNative.native.openExternal = function (url) {
-            window.__VEMOBILE__.sendToNative("openUrl", { url: url });
-          };
-        }
-
-        // Add mobile-specific APIs
         _vcNative.mobile = {
-          getPlatform: function () {
-            return window.__VEMOBILE__.platform;
-          },
-          requestWakeLock: function () {
-            return window.__VEMOBILE__.callNative("requestWakeLock", []);
-          },
-          releaseWakeLock: function () {
-            return window.__VEMOBILE__.callNative("releaseWakeLock", []);
-          },
-          registerPushToken: function (token) {
-            return window.__VEMOBILE__.callNative("registerPushToken", [token]);
-          },
-          getDeviceInfo: function () {
-            return window.__VEMOBILE__.callNative("getDeviceInfo", []);
-          },
+          getPlatform: function () { return window.__VEMOBILE__.platform; },
+          requestWakeLock: function () { return window.__VEMOBILE__.callNative("requestWakeLock", []); },
+          releaseWakeLock: function () { return window.__VEMOBILE__.callNative("releaseWakeLock", []); },
+          getDeviceInfo: function () { return window.__VEMOBILE__.callNative("getDeviceInfo", []); },
         };
       }
     },
     configurable: true,
     enumerable: true,
   });
+
+  // --- Inject base mobile layout CSS ---
+  // Runs immediately to prevent flash of broken layout
+  var baseCSS = document.createElement("style");
+  baseCSS.id = "vemobile-base";
+  baseCSS.textContent = [
+    /* Prevent horizontal overflow everywhere */
+    "html, body { width: 100vw !important; max-width: 100vw !important; overflow-x: hidden !important; }",
+    /* Force Discord's root to fill and clip */
+    "#app-mount { width: 100vw !important; max-width: 100vw !important; overflow-x: hidden !important; }",
+    /* Make the app layer fill viewport */
+    '[class*="app"] { width: 100vw !important; max-width: 100vw !important; }',
+    /* Base content should not overflow */
+    '[class*="base"] { min-width: 0 !important; width: 100% !important; max-width: 100% !important; }',
+    '[class*="content"] { min-width: 0 !important; max-width: 100% !important; }',
+    /* Hide server list on narrow screens by default */
+    '[class*="guilds"] { width: 0 !important; min-width: 0 !important; overflow: hidden !important; }',
+    /* Hide member list by default */
+    '[class*="membersWrap"] { display: none !important; }',
+    '[class*="members"] { display: none !important; }',
+    /* Chat area takes full width */
+    '[class*="chat"] { flex: 1 !important; min-width: 0 !important; width: auto !important; }',
+    /* Messages area */
+    '[class*="messagesWrapper"] { width: 100% !important; max-width: 100% !important; }',
+    /* Fix login page */
+    '[class*="authBox"] { width: 90vw !important; max-width: 420px !important; margin: 0 auto !important; }',
+    '[class*="authBox"] form { width: 100% !important; }',
+    '[class*="authBox"] input { width: 100% !important; box-sizing: border-box !important; font-size: 16px !important; }',
+    /* Remove any min-width on containers */
+    '[class*="container"] { min-width: 0 !important; }',
+    '[class*="layer"] { min-width: 0 !important; }',
+    /* Fix all scrollers */
+    '[class*="scroller"] { -webkit-overflow-scrolling: touch !important; overscroll-behavior: contain !important; max-width: 100% !important; }',
+    /* Modals should fit screen */
+    '[class*="modal"] { max-width: 100vw !important; max-height: 100vh !important; overflow-y: auto !important; }',
+    '[class*="root"] { max-width: 100vw !important; }',
+    /* Fix SVG/icon contention */
+    "svg { max-width: 100% !important; }",
+    "img { max-width: 100% !important; }",
+    /* Hide download app banners */
+    '[class*="mobileWebRTCBanner"], [class*="getAppBanner"], [class*="mobileBanner"] { display: none !important; }',
+    /* Fix message input bar at bottom */
+    '[class*="channelTextArea"] { margin: 0 !important; }',
+    '[class*="form"] { position: sticky !important; bottom: 0 !important; }',
+    /* Safe area padding */
+    ":root {",
+    "  --safe-top: env(safe-area-inset-top, 0px);",
+    "  --safe-bottom: env(safe-area-inset-bottom, 0px);",
+    "  --safe-left: env(safe-area-inset-left, 0px);",
+    "  --safe-right: env(safe-area-inset-right, 0px);",
+    "}",
+    "#app-mount {",
+    "  padding-top: var(--safe-top) !important;",
+    "  padding-bottom: var(--safe-bottom) !important;",
+    "  padding-left: var(--safe-left) !important;",
+    "  padding-right: var(--safe-right) !important;",
+    "}",
+    /* Text input sizing - prevent iOS zoom */
+    'textarea, input[type="text"], input[type="email"], input[type="password"], [contenteditable] { font-size: 16px !important; }',
+    /* Larger touch targets */
+    '[role="button"], button, [class*="clickable"] { min-height: 44px !important; min-width: 44px !important; }',
+    /* Fix popout/menu positioning */
+    '[class*="popout"], [class*="menu"] { max-width: 90vw !important; }',
+    /* Fix long words breaking layout */
+    '* { word-wrap: break-word !important; overflow-wrap: break-word !important; }',
+    /* Fix account panel at bottom */
+    '[class*="panels"] { width: 100% !important; }',
+    /* Fix server channel list when visible */
+    '.vemobile-show-channels [class*="sidebar"] { display: flex !important; width: 70vw !important; max-width: 300px !important; }',
+    '.vemobile-show-channels [class*="chat"] { display: none !important; }',
+    /* Fix server list when visible */
+    '.vemobile-show-guilds [class*="guilds"] { width: 72px !important; min-width: 72px !important; overflow: visible !important; }',
+    /* Bottom nav bar */
+    ".vemobile-nav {",
+    "  position: fixed; bottom: 0; left: 0; right: 0; z-index: 10000;",
+    "  display: flex; justify-content: space-around; align-items: center;",
+    "  height: 50px; background: #1e1f22; border-top: 1px solid #2b2d31;",
+    "  padding-bottom: var(--safe-bottom);",
+    "}",
+    ".vemobile-nav button {",
+    "  flex: 1; height: 100%; border: none; background: none; color: #949ba4;",
+    "  font-size: 11px; display: flex; flex-direction: column; align-items: center; justify-content: center;",
+    "  padding: 4px; cursor: pointer;",
+    "}",
+    ".vemobile-nav button.active { color: #5865f2; }",
+    ".vemobile-nav button svg { width: 24px; height: 24px; margin-bottom: 2px; }",
+    /* Push content above nav bar */
+    '[class*="app"] { padding-bottom: 50px !important; }',
+  ].join("\n");
+  document.head.appendChild(baseCSS);
 
   console.log("[Vemobile] Prelude loaded. Platform:", window.__VEMOBILE__.platform);
 })();
@@ -378,400 +466,289 @@ ${n}`})},onBeforeMessageSend(e,t){return this.unindentMsg(t)},onBeforeMessageEdi
 //# sourceURL=file:///VencordWeb
 /*! For license information please see browser.js.LEGAL.txt */
 /**
- * Vemobile Patches — Runs after Vencord bundle is loaded.
- * Adds mobile-specific plugins via Vencord's plugin API.
+ * Vemobile Patches — Runs after Vencord bundle loads.
+ * Adds mobile navigation, call fallback, wake lock, updater.
  */
 (function () {
-  if (!window.Vencord) {
-    console.error("[Vemobile] Vencord not found. Cannot apply mobile patches.");
-    return;
-  }
-
-  var Vencord = window.Vencord;
-  var api = Vencord.Api || {};
-  var PluginManager = api.PluginManager || Vencord.Plugins || {};
-  var plugins = PluginManager.plugins || {};
+  var Vencord = window.Vencord || {};
+  var tryRegister = function (plugin) {
+    try {
+      if (Vencord.Plugins && Vencord.Plugins.plugins) {
+        Vencord.Plugins.plugins[plugin.name] = plugin;
+      }
+      if (plugin.start) plugin.start();
+      console.log("[Vemobile] Registered:", plugin.name);
+    } catch (e) {
+      console.error("[Vemobile] Failed to register:", plugin.name, e);
+    }
+  };
 
   console.log("[Vemobile] Applying mobile patches...");
 
-  // --- Mobile UX Plugin ---
-  // Adds bottom navigation, swipe gestures, touch target fixes
+  // ====================================================================
+  // MobileUX — Bottom navigation bar, server/channel toggling, gestures
+  // ====================================================================
   function MobileUXPlugin() {
+    var navBar = null;
     var styleEl = null;
+    var observer = null;
 
-    function injectMobileCSS() {
-      if (styleEl) return;
-      styleEl = document.createElement("style");
-      styleEl.id = "vemobile-ux";
-      styleEl.textContent = [
-        // Safe area padding for notched devices
-        ":root {",
-        "  --vemobile-safe-top: env(safe-area-inset-top, 0px);",
-        "  --vemobile-safe-bottom: env(safe-area-inset-bottom, 0px);",
-        "  --vemobile-safe-left: env(safe-area-inset-left, 0px);",
-        "  --vemobile-safe-right: env(safe-area-inset-right, 0px);",
-        "}",
-        // Apply safe areas
-        '[class*="app"] {',
-        "  padding-top: var(--vemobile-safe-top) !important;",
-        "  padding-bottom: var(--vemobile-safe-bottom) !important;",
-        "}",
-        // Larger touch targets
-        '[class*="button"], [class*="clickable"], [role="button"], .vemobile-touch-target {',
-        "  min-height: 44px !important;",
-        "  min-width: 44px !important;",
-        "}",
-        // Better text input sizing
-        '[class*="textArea"], [class*="textArea"] [contenteditable], textarea[class*="textArea"] {',
-        "  font-size: 16px !important; /* prevents iOS zoom on focus */",
-        "}",
-        // Hide Discord's mobile download banner
-        '[class*="mobileWebRTCBanner"], [class*="mobile-actions"], [class*="getAppBanner"] {',
-        "  display: none !important;",
-        "}",
-        // Better scrolling
-        '[class*="scroller"] {',
-        "  -webkit-overflow-scrolling: touch !important;",
-        "  overscroll-behavior: contain;",
-        "}",
-        // Fix message box positioning for mobile keyboard
-        '.vemobile-keyboard-open [class*="chat"] [class*="form"] {',
-        "  position: sticky;",
-        "  bottom: 0;",
-        "}",
-      ].join("\n");
-      document.head.appendChild(styleEl);
-    }
+    function createNavBar() {
+      if (navBar) return;
+      if (document.querySelector(".vemobile-nav")) return;
 
-    function removeMobileCSS() {
-      if (styleEl) {
-        styleEl.remove();
-        styleEl = null;
+      navBar = document.createElement("div");
+      navBar.className = "vemobile-nav";
+      navBar.innerHTML = [
+        '<button id="vemobile-btn-servers" title="Servers">',
+        '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>',
+        '<span>Servers</span></button>',
+        '<button id="vemobile-btn-channels" title="Channels" class="active">',
+        '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>',
+        '<span>Chat</span></button>',
+        '<button id="vemobile-btn-members" title="Members">',
+        '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>',
+        '<span>Members</span></button>',
+        '<button id="vemobile-btn-settings" title="Settings">',
+        '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L3.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>',
+        '<span>Settings</span></button>',
+      ].join("");
+
+      document.body.appendChild(navBar);
+
+      // Button handlers
+      function clearActive() {
+        navBar.querySelectorAll("button").forEach(function (b) { b.classList.remove("active"); });
       }
+
+      document.getElementById("vemobile-btn-servers").onclick = function () {
+        clearActive(); this.classList.add("active");
+        document.body.classList.remove("vemobile-show-channels");
+        document.body.classList.toggle("vemobile-show-guilds");
+        // Find and click server list toggle
+        var b = document.querySelector('[class*="guilds"] button, [aria-label="Servers"]');
+        if (b) b.click();
+      };
+
+      document.getElementById("vemobile-btn-channels").onclick = function () {
+        clearActive(); this.classList.add("active");
+        document.body.classList.remove("vemobile-show-guilds", "vemobile-show-channels");
+      };
+
+      document.getElementById("vemobile-btn-members").onclick = function () {
+        clearActive(); this.classList.add("active");
+        document.body.classList.remove("vemobile-show-guilds", "vemobile-show-channels");
+        var b = document.querySelector('[aria-label="Member List"], [aria-label="Members"]');
+        if (b) b.click();
+      };
+
+      document.getElementById("vemobile-btn-settings").onclick = function () {
+        clearActive(); this.classList.add("active");
+        document.body.classList.remove("vemobile-show-guilds", "vemobile-show-channels");
+        // Open Discord settings
+        var b = document.querySelector('[class*="sidebar"] [class*="userSettings"] button, [aria-label="User Settings"]');
+        if (b) b.click();
+      };
     }
 
-    // Swipe gesture detection
-    var touchStartX = 0;
-    var touchStartY = 0;
-    var swiping = false;
+    function removeNavBar() {
+      if (navBar) { navBar.remove(); navBar = null; }
+    }
 
+    // Show a banner when calls are attempted — offer to open native Discord
+    function overrideCallUnsupported() {
+      var origAlert = window.alert;
+      window.alert = function (msg) {
+        if (typeof msg === "string" && (msg.indexOf("not support") >= 0 || msg.indexOf("not available") >= 0 || msg.indexOf("RTC") >= 0 || msg.indexOf("WebRTC") >= 0 || msg.indexOf("voice") >= 0 || msg.indexOf("call") >= 0)) {
+          // Instead of alert, show a native dialog
+          window.__VEMOBILE__.sendToNative("callUnsupported", { message: msg });
+          return;
+        }
+        return origAlert.apply(this, arguments);
+      };
+
+      // Also intercept Discord's call start error
+      var origError = console.error;
+      var warned = false;
+      console.error = function () {
+        var args = Array.prototype.slice.call(arguments);
+        var msg = args.join(" ");
+        if (!warned && (msg.indexOf("RTC") >= 0 || msg.indexOf("WebRTC") >= 0 || msg.indexOf("getUserMedia") >= 0)) {
+          warned = true;
+          window.__VEMOBILE__.sendToNative("callUnsupported", { message: "Voice and video calls are not supported in this WebView. Open the native Discord app for calls." });
+        }
+        return origError.apply(console, args);
+      };
+    }
+
+    // Intercept call buttons to show fallback
+    function interceptCallButtons() {
+      setInterval(function () {
+        // Find call buttons in the UI
+        var callBtns = document.querySelectorAll('[aria-label*="Voice"], [aria-label*="Video"], [aria-label*="Call"], [aria-label*="Start Voice"], [aria-label*="Start Video"]');
+        callBtns.forEach(function (btn) {
+          if (btn._vemobileIntercepted) return;
+          btn._vemobileIntercepted = true;
+          btn.addEventListener("click", function (e) {
+            // Let the normal flow happen, but also notify
+            window.__VEMOBILE__.sendToNative("callAttempted", {});
+          }, true);
+        });
+      }, 2000);
+    }
+
+    // Swipe to show/hide channel list
+    var touchStartX = 0, touchStartY = 0;
     function onTouchStart(e) {
       if (e.touches.length !== 1) return;
       touchStartX = e.touches[0].clientX;
       touchStartY = e.touches[0].clientY;
-      swiping = true;
     }
-
     function onTouchEnd(e) {
-      if (!swiping) return;
-      swiping = false;
       var dx = e.changedTouches[0].clientX - touchStartX;
       var dy = e.changedTouches[0].clientY - touchStartY;
-
-      // Only handle horizontal swipes (more horizontal than vertical)
-      if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 80) {
-        // Swipe right: open server list
-        if (dx > 0 && touchStartX < 50) {
-          var serverListBtn = document.querySelector('[class*="guilds"] button, [aria-label="Servers"], [data-list-id="guildsnav"]');
-          if (serverListBtn) serverListBtn.click();
-        }
-        // Swipe left: open channel/member list
-        if (dx < 0) {
-          var memberListBtn = document.querySelector('[aria-label="Member List"]');
-          if (memberListBtn) memberListBtn.click();
-        }
+      if (Math.abs(dx) <= Math.abs(dy) || Math.abs(dx) < 100) return;
+      if (dx > 0 && touchStartX < 40) {
+        document.body.classList.add("vemobile-show-channels");
+        var btns = document.querySelectorAll(".vemobile-nav button");
+        for (var i = 0; i < btns.length; i++) btns[i].classList.remove("active");
+        var cb = document.getElementById("vemobile-btn-channels");
+        if (cb) cb.classList.add("active");
       }
     }
 
-    function addSwipeGestures() {
+    function start() {
+      createNavBar();
+      overrideCallUnsupported();
+      interceptCallButtons();
       document.addEventListener("touchstart", onTouchStart, { passive: true });
       document.addEventListener("touchend", onTouchEnd, { passive: true });
+      console.log("[Vemobile] MobileUX started");
     }
 
-    function removeSwipeGestures() {
+    function stop() {
+      removeNavBar();
       document.removeEventListener("touchstart", onTouchStart);
       document.removeEventListener("touchend", onTouchEnd);
     }
 
-    // Keyboard handling
-    function onKeyboardChange() {
-      var isKeyboardOpen =
-        window.visualViewport && window.visualViewport.height < window.innerHeight * 0.8;
-      document.body.classList.toggle("vemobile-keyboard-open", isKeyboardOpen);
-    }
-
-    function startKeyboardObserver() {
-      if (window.visualViewport) {
-        window.visualViewport.addEventListener("resize", onKeyboardChange);
-      }
-    }
-
-    function stopKeyboardObserver() {
-      if (window.visualViewport) {
-        window.visualViewport.removeEventListener("resize", onKeyboardChange);
-      }
-    }
-
-    return {
-      name: "MobileUX",
-      start: function () {
-        injectMobileCSS();
-        addSwipeGestures();
-        startKeyboardObserver();
-        console.log("[Vemobile] MobileUX plugin started");
-      },
-      stop: function () {
-        removeMobileCSS();
-        removeSwipeGestures();
-        stopKeyboardObserver();
-      },
-    };
+    return { name: "MobileUX", start: start, stop: stop };
   }
 
-  // --- Wake Lock Plugin ---
-  // Keeps screen on during voice/video calls
+  // ====================================================================
+  // WakeLock — Screen stays on during calls
+  // ====================================================================
   function WakeLockPlugin() {
     var wakeLock = null;
-    var watching = false;
+    var interval = null;
 
-    async function requestWakeLock() {
+    async function acquire() {
       try {
-        // Try Web Wake Lock API first (works in some WebViews)
         if ("wakeLock" in navigator) {
           wakeLock = await navigator.wakeLock.request("screen");
-        } else {
-          // Fall back to mobile native bridge
-          await window.__VEMOBILE__.callNative("requestWakeLock", []);
         }
-        console.log("[Vemobile] Wake lock acquired");
-      } catch (e) {
-        console.warn("[Vemobile] Wake lock failed:", e);
-      }
+        await window.__VEMOBILE__.callNative("requestWakeLock", []);
+      } catch (e) {}
     }
 
-    async function releaseWakeLock() {
+    async function release() {
       try {
-        if (wakeLock) {
-          await wakeLock.release();
-          wakeLock = null;
-        }
+        if (wakeLock) { await wakeLock.release(); wakeLock = null; }
         await window.__VEMOBILE__.callNative("releaseWakeLock", []);
-        console.log("[Vemobile] Wake lock released");
-      } catch (e) {
-        console.warn("[Vemobile] Wake lock release failed:", e);
-      }
+      } catch (e) {}
     }
 
-    function watchVoiceState() {
-      if (watching) return;
-      watching = true;
-
-      // Poll for voice connection state changes
-      setInterval(function () {
-        try {
-          // Check if user is in a voice channel using Discord's stores
-          var vcStates = document.querySelectorAll('[class*="voiceConnected"], [class*="call"], [class*="rtcConnection"]');
-          if (vcStates && vcStates.length > 0) {
-            if (!wakeLock) requestWakeLock();
-          } else {
-            if (wakeLock) releaseWakeLock();
-          }
-        } catch (e) {
-          // Silently ignore
-        }
+    function watch() {
+      interval = setInterval(function () {
+        var inCall =
+          document.querySelector('[class*="voiceConnected"]') ||
+          document.querySelector('[class*="call"]') ||
+          document.querySelector('[class*="rtcConnection"]') ||
+          document.querySelector('[class*="stage"]');
+        if (inCall && !wakeLock) acquire();
+        else if (!inCall && wakeLock) release();
       }, 5000);
     }
 
-    return {
-      name: "WakeLock",
-      start: function () {
-        watchVoiceState();
-        console.log("[Vemobile] WakeLock plugin started");
-      },
-      stop: function () {
-        releaseWakeLock();
-        watching = false;
-      },
-    };
+    return { name: "WakeLock", start: watch, stop: function () { clearInterval(interval); release(); } };
   }
 
-  // --- Analytics Block Plugin ---
-  // Blocks Discord tracking and telemetry on mobile
+  // ====================================================================
+  // NoTrack — Block Discord analytics
+  // ====================================================================
   function NoTrackPlugin() {
-    var blockedHosts = [
-      "discord.com/api/v*/science",
-      "discord.com/api/v*/track",
-      "sentry.io",
-      "cdn.sentry.io",
-    ];
-
-    function setupBlocking() {
-      // Intercept fetch
-      if (window._vemobileFetchBlocked) return;
-      window._vemobileFetchBlocked = true;
-
-      var origFetch = window.fetch;
+    var blocked = ["discord.com/api/v*/science", "discord.com/api/v*/track", "sentry.io"];
+    var origFetch = window.fetch;
+    function start() {
+      if (window._vemobileNoTrack) return;
+      window._vemobileNoTrack = true;
       window.fetch = function (url, opts) {
-        var urlStr = typeof url === "string" ? url : url && url.url ? url.url : "";
-        for (var i = 0; i < blockedHosts.length; i++) {
-          if (urlStr.indexOf(blockedHosts[i]) >= 0) {
-            console.log("[Vemobile] Blocked tracking request:", urlStr);
+        var s = typeof url === "string" ? url : (url && url.url) || "";
+        for (var i = 0; i < blocked.length; i++) {
+          if (s.indexOf(blocked[i]) >= 0) {
             return Promise.resolve(new Response("{}", { status: 200 }));
           }
         }
         return origFetch.apply(this, arguments);
       };
     }
-
-    return {
-      name: "NoTrack",
-      start: function () {
-        setupBlocking();
-        console.log("[Vemobile] NoTrack plugin started");
-      },
-      stop: function () {
-        window._vemobileFetchBlocked = false;
-        window.fetch = window._vemobileOrigFetch || window.fetch;
-      },
-    };
+    function stop() {
+      window._vemobileNoTrack = false;
+      window.fetch = origFetch;
+    }
+    return { name: "NoTrack", start: start, stop: stop };
   }
 
-  // --- Mobile Updater Plugin ---
-  // Checks GitHub releases for new mod bundle versions
+  // ====================================================================
+  // MobileUpdater — Check GitHub for new bundle versions
+  // ====================================================================
   function MobileUpdaterPlugin() {
-    var UPDATE_URL =
-      "https://api.github.com/repos/vencordmobile/vemobile/releases/latest";
+    var url = "https://api.github.com/repos/yHugoSoares/VencordMobile/releases/latest";
     var lastCheck = 0;
-
-    async function checkForUpdate() {
-      try {
-        var now = Date.now();
-        if (now - lastCheck < 3600000) return; // Check at most once per hour
-        lastCheck = now;
-
-        var resp = await fetch(UPDATE_URL);
-        if (!resp.ok) return;
-        var release = await resp.json();
-        var remoteVersion = release.tag_name.replace("v", "");
-        var currentVersion = window.__VEMOBILE__.version || "0.0.0";
-
-        if (compareVersions(remoteVersion, currentVersion) > 0) {
-          window.__VEMOBILE__.sendToNative("updateAvailable", {
-            version: remoteVersion,
-            url: release.html_url,
-            notes: release.body,
-          });
+    function check() {
+      var now = Date.now();
+      if (now - lastCheck < 3600000) return;
+      lastCheck = now;
+      fetch(url).then(function (r) { return r.json(); }).then(function (rel) {
+        var remote = (rel.tag_name || "").replace(/^v/, "");
+        var current = window.__VEMOBILE__.version || "0.0.0";
+        if (compareVersions(remote, current) > 0) {
+          window.__VEMOBILE__.sendToNative("updateAvailable", { version: remote, url: rel.html_url, notes: rel.body || "" });
         }
-      } catch (e) {
-        console.warn("[Vemobile] Update check failed:", e);
-      }
+      }).catch(function () {});
     }
-
     function compareVersions(a, b) {
-      var pa = a.split(".").map(Number);
-      var pb = b.split(".").map(Number);
-      for (var i = 0; i < 3; i++) {
-        if ((pa[i] || 0) > (pb[i] || 0)) return 1;
-        if ((pa[i] || 0) < (pb[i] || 0)) return -1;
-      }
+      var pa = a.split(".").map(Number), pb = b.split(".").map(Number);
+      for (var i = 0; i < 3; i++) { if ((pa[i] || 0) > (pb[i] || 0)) return 1; if ((pa[i] || 0) < (pb[i] || 0)) return -1; }
       return 0;
     }
-
-    return {
-      name: "MobileUpdater",
-      start: function () {
-        checkForUpdate();
-        setInterval(checkForUpdate, 3600000); // Every hour
-        console.log("[Vemobile] MobileUpdater plugin started");
-      },
-      stop: function () {},
-    };
+    return { name: "MobileUpdater", start: function () { check(); setInterval(check, 3600000); }, stop: function () {} };
   }
 
-  // --- Push Notification Plugin ---
-  // Bridges FCM/APNs push notifications
-  function PushNotificationsPlugin() {
-    var fcmToken = null;
+  // ====================================================================
+  // Register all plugins
+  // ====================================================================
+  var plugins = [MobileUXPlugin(), WakeLockPlugin(), NoTrackPlugin(), MobileUpdaterPlugin()];
 
-    async function init() {
-      try {
-        // Request permission
-        if ("Notification" in window && Notification.permission === "default") {
-          await Notification.requestPermission();
-        }
-        // Get FCM token from native
-        var result = await window.__VEMOBILE__.callNative("getFCMToken", []);
-        if (result && result.token) {
-          fcmToken = result.token;
-          console.log("[Vemobile] FCM token:", fcmToken);
-        }
-      } catch (e) {
-        console.warn("[Vemobile] Push notifications init failed:", e);
-      }
-    }
-
-    return {
-      name: "PushNotifications",
-      start: function () {
-        init();
-        console.log("[Vemobile] PushNotifications plugin started");
-      },
-      stop: function () {},
-    };
+  function registerAll() {
+    plugins.forEach(tryRegister);
   }
 
-  // --- Register mobile plugins with Vencord ---
-  function registerMobilePlugins() {
-    var mobilePlugins = [
-      MobileUXPlugin(),
-      WakeLockPlugin(),
-      NoTrackPlugin(),
-      MobileUpdaterPlugin(),
-      PushNotificationsPlugin(),
-    ];
-
-    mobilePlugins.forEach(function (plugin) {
-      if (plugins[plugin.name]) {
-        console.log("[Vemobile] Plugin already registered:", plugin.name);
-        return;
-      }
-      // Register with Vencord's plugin system
-      try {
-        if (PluginManager.addPlugin) {
-          PluginManager.addPlugin(plugin);
-        } else {
-          // Fallback: add directly to plugins registry
-          plugins[plugin.name] = plugin;
-        }
-        // Auto-start the plugin
-        if (plugin.start) plugin.start();
-        console.log("[Vemobile] Registered mobile plugin:", plugin.name);
-      } catch (e) {
-        console.error("[Vemobile] Failed to register plugin:", plugin.name, e);
-      }
-    });
-  }
-
-  // Wait for Vencord to be fully ready, then register
-  function waitForVencordReady() {
-    if (
-      window.Vencord &&
-      window.Vencord.Webpack &&
-      window.Vencord.Webpack.onceReady
-    ) {
-      window.Vencord.Webpack.onceReady.then(function () {
-        registerMobilePlugins();
-      });
-    } else {
-      // Retry after a delay
-      setTimeout(waitForVencordReady, 500);
-    }
-  }
-
-  // Start immediately — if Vencord's webpack isn't ready, wait
-  if (plugins && Object.keys(plugins).length > 0) {
-    registerMobilePlugins();
+  // Wait for Vencord webpack to be ready
+  if (Vencord.Webpack && Vencord.Webpack.onceReady) {
+    Vencord.Webpack.onceReady.then(registerAll);
   } else {
-    waitForVencordReady();
+    // Poll for Vencord initialization
+    var attempts = 0;
+    var poll = setInterval(function () {
+      if (window.Vencord && window.Vencord.Webpack && window.Vencord.Webpack.cache) {
+        clearInterval(poll);
+        registerAll();
+      } else if (++attempts > 60) {
+        clearInterval(poll);
+        console.log("[Vemobile] Vencord not detected after 30s, registering anyway");
+        registerAll();
+      }
+    }, 500);
   }
 })();
