@@ -8,6 +8,7 @@ import 'storage_service.dart';
 class JsBridge {
   void Function()? onCallUnsupported;
   void Function()? onCallAttempted;
+  void Function()? onNavigateBack;
 
   void handleJsMessage(WebViewController controller, String message) {
     try {
@@ -17,13 +18,15 @@ class JsBridge {
 
       switch (type) {
         case 'bridge':
-          _handleNativeCall(controller, data['data'] as Map<String, dynamic>? ?? {});
+          _handleNativeCall(controller, payload);
         case 'openUrl':
           _launchUrl(payload['url'] as String? ?? '');
         case 'callUnsupported':
           onCallUnsupported?.call();
         case 'callAttempted':
           onCallAttempted?.call();
+        case 'goBack':
+          onNavigateBack?.call();
       }
     } catch (_) {}
   }
@@ -43,7 +46,7 @@ class JsBridge {
           await const MethodChannel('vemobile/wakelock').invokeMethod('release');
           result = {'success': true};
         case 'getDeviceInfo':
-          result = {'platform': defaultTargetPlatform.toString(), 'appVersion': '0.3.0'};
+          result = {'platform': defaultTargetPlatform.toString(), 'appVersion': '0.4.0'};
         case 'getFCMToken':
           result = {'token': await StorageService.getString('push_token') ?? ''};
         default:

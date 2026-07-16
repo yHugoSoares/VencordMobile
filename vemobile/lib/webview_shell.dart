@@ -23,6 +23,8 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
     WidgetsBinding.instance.addObserver(this);
     _jsBridge.onCallUnsupported = _showCallFallbackDialog;
     _jsBridge.onCallAttempted = _showCallFallbackDialog;
+    // Wire back navigation requests from JS (Discord SPA popstate)
+    _jsBridge.onNavigateBack = () => _goBack();
     _controller = _createWebView();
   }
 
@@ -30,6 +32,31 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  /// Handle system back button: delegate to WebView first, then pop app.
+  Future<bool> _onWillPop() async {
+    if (await _controller.canGoBack()) {
+      _controller.goBack();
+      return false; // Don't pop the Flutter route
+    }
+    // Nothing to go back to — minimize app (platform default)
+    SystemNavigator.pop();
+    return false;
+  }
+
+  /// Go back in WebView history, with JS fallback for SPAs.
+  Future<void> _goBack() async {
+    try {
+      // Try browser history first
+      final canGo = await _controller.canGoBack();
+      if (canGo) {
+        _controller.goBack();
+      } else {
+        // Fallback: tell Discord SPA to go home
+        _controller.runJavaScript("history.back()");
+      }
+    } catch (_) {}
   }
 
   WebViewController _createWebView() {
@@ -41,7 +68,7 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
     ctrl.setUserAgent(
       'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 '
-      'Vemobile/0.3.0',
+      'Vemobile/0.4.0',
     );
 
     ctrl.setNavigationDelegate(
@@ -49,15 +76,16 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
         onPageStarted: (_) {
           if (mounted) setState(() => _isLoading = true);
         },
-        onPageFinished: (_) {
+        onPageFinished: (_) async {
           if (mounted) setState(() => _isLoading = false);
           _injectVencordBundle();
+          // Notify JS of the current canGoBack state
+          _updateJsBackState();
         },
         onWebResourceError: (error) {
           debugPrint('[Vemobile] Web error: ${error.description}');
         },
         onNavigationRequest: (request) {
-          // Parse the URL properly for host matching (fixes 2FA, auth redirects)
           final uri = Uri.tryParse(request.url);
           if (uri == null) return NavigationDecision.navigate;
 
@@ -72,7 +100,7 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
             return NavigationDecision.navigate;
           }
 
-          // Allow auth/captcha providers (needed for login + 2FA)
+          // Allow auth/captcha providers
           if (uri.host.endsWith('hcaptcha.com') ||
               uri.host.endsWith('recaptcha.net') ||
               uri.host == 'www.google.com' ||
@@ -83,7 +111,6 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
             return NavigationDecision.navigate;
           }
 
-          // Everything else — open in native browser
           _openExternalUrl(request.url);
           return NavigationDecision.prevent;
         },
@@ -95,19 +122,46 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
       onMessageReceived: (message) => _jsBridge.handleJsMessage(ctrl, message.message),
     );
 
-    // Load Discord directly — no fragment, Discord handles initial route
     ctrl.loadRequest(Uri.parse('https://discord.com/app'));
-
     return ctrl;
+  }
+
+  /// Tell the JS layer whether the WebView can go back (for showing/hiding back button)
+  Future<void> _updateJsBackState() async {
+    try {
+      final canGo = await _controller.canGoBack();
+      _controller.runJavaScript(
+        "window.__VEMOBILE__ && window.__VEMOBILE__._updateBackState && "
+        "window.__VEMOBILE__._updateBackState($canGo)",
+      );
+    } catch (_) {}
   }
 
   Future<void> _injectVencordBundle() async {
     if (_vencordInjected) return;
     _vencordInjected = true;
 
+    // Inject CSS early at DOMContentLoaded so Vencord styles load before Discord paints
     try {
-      final vemobileJs = await rootBundle.loadString('assets/vemobile.js');
-      await _controller.runJavaScript(vemobileJs);
+      final css = await rootBundle.loadString('assets/vemobile.css');
+      final escaped = css
+          .replaceAll('\\', '\\\\').replaceAll("'", "\\'")
+          .replaceAll('\n', '\\n').replaceAll('\r', '');
+      await _controller.runJavaScript("""
+        (function(){
+          var s=document.getElementById('vemobile-vc-css');
+          if(!s){s=document.createElement('style');s.id='vemobile-vc-css';
+          (document.head||document.documentElement).appendChild(s);}
+          s.textContent='$escaped';
+        })();
+      """);
+    } catch (e) {
+      debugPrint('[Vemobile] CSS injection failed: $e');
+    }
+
+    try {
+      final js = await rootBundle.loadString('assets/vemobile.js');
+      await _controller.runJavaScript(js);
       debugPrint('[Vemobile] Bundle injected');
     } catch (e) {
       debugPrint('[Vemobile] Bundle injection failed: $e');
@@ -155,23 +209,29 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF202225),
-      body: SafeArea(
-        bottom: false,
-        top: false,
-        child: Stack(
-          children: [
-            WebViewWidget(controller: _controller),
-            if (_isLoading)
-              Positioned(
-                top: 0, left: 0, right: 0,
-                child: LinearProgressIndicator(
-                  backgroundColor: Colors.grey[800],
-                  valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF5865F2)),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _onWillPop();
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF202225),
+        body: SafeArea(
+          top: true,   // Protect top from status bar / notch
+          bottom: false, // We handle bottom with CSS nav bar
+          child: Stack(
+            children: [
+              WebViewWidget(controller: _controller),
+              if (_isLoading)
+                Positioned(
+                  top: 0, left: 0, right: 0,
+                  child: LinearProgressIndicator(
+                    backgroundColor: Colors.grey[800],
+                    valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF5865F2)),
+                  ),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );
