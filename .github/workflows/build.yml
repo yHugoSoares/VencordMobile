@@ -29,12 +29,8 @@ jobs:
         run: flutter pub get
         working-directory: vemobile
 
-      - name: Build APK (debug)
+      - name: Build APK
         run: flutter build apk --debug
-        working-directory: vemobile
-
-      - name: Build APK (release)
-        run: flutter build apk --release
         working-directory: vemobile
 
       - name: Upload APK
@@ -43,7 +39,6 @@ jobs:
           name: vemobile-apk
           path: |
             vemobile/build/app/outputs/flutter-apk/app-debug.apk
-            vemobile/build/app/outputs/flutter-apk/app-release.apk
 
   release:
     name: Create Release
