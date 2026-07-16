@@ -1,9 +1,9 @@
 /**
- * Vemobile Prelude v0.4.0
+ * Vemobile Prelude v0.4.2
  *
  * Minimal prelude — Discord's mobile web app handles layout.
- * Adds: bridge, WebRTC stubs, VencordNative proxy, bottom nav,
- * floating back button (SPA-aware), keyboard handling.
+ * Adds: bridge, WebRTC stubs + browser check override, VencordNative proxy,
+ * bottom nav (hidden on login), floating back button, keyboard handling.
  */
 (function () {
   var ua = navigator.userAgent || "";
@@ -11,7 +11,7 @@
 
   window.__VEMOBILE__ = {
     platform: isAndroid ? "android" : "ios",
-    version: "0.4.0",
+    version: "0.4.2",
     sendToNative: function (t, d) {
       try { window.VemobileBridge && window.VemobileBridge.postMessage(JSON.stringify({ type: t, data: d })); } catch (e) {}
     },
@@ -30,8 +30,6 @@
         window.__VEMOBILE__.sendToNative("bridge", { id: id, method: method, args: args || [] });
       });
     },
-    // Called by native to update back button visibility
-    _updateBackState: function (canGoBack) {},
   };
 
   // ── Viewport ──
@@ -42,7 +40,7 @@
     document.head.appendChild(vp);
   }
 
-  // ── WebRTC stubs ──
+  // ── WebRTC stubs + browser support override ──
   if (!navigator.mediaDevices) navigator.mediaDevices = {};
   if (!navigator.mediaDevices.getUserMedia) {
     navigator.mediaDevices.getUserMedia = function () { return Promise.reject(new Error("WebView")); };
@@ -52,6 +50,16 @@
   }
   if (!window.RTCPeerConnection) {
     window.RTCPeerConnection = function () { throw new Error("WebRTC not available"); };
+  }
+  // Override Discord's browser support check — it checks API existence
+  // and may show "Browser not supported" even with stubbed RTCPeerConnection
+  window.webkitRTCPeerConnection = window.RTCPeerConnection;
+  if (!window.MediaStream) {
+    window.MediaStream = function () {};
+    window.MediaStream.prototype = {};
+  }
+  if (!window.MediaStreamTrack) {
+    window.MediaStreamTrack = function () {};
   }
 
   // ── VencordNative proxy ──
@@ -88,21 +96,26 @@
   var CSS = document.createElement("style");
   CSS.id = "vemobile-base";
   CSS.textContent = [
-    "html,body{overflow-x:hidden}",
+    // No overflow-x:hidden on html! It blocks Discord's side-swipe.
+    // Only prevent overflow on #app-mount.
+    "#app-mount{overflow-x:hidden}",
 
-    // Safe areas — respect device insets (status bar, notch, home indicator)
+    // Safe areas
     "#app-mount{padding-top:env(safe-area-inset-top,0);padding-bottom:calc(48px + env(safe-area-inset-bottom,0));padding-left:env(safe-area-inset-left,0);padding-right:env(safe-area-inset-right,0)}",
 
     // Hide Discord's "download the app" banners
     '[class*=mobileBanner],[class*=getAppBanner],[class*=downloadApp]{display:none!important}',
 
-    // Touch targets (16px font prevents iOS zoom)
+    // Touch targets
     "textarea,input,[contenteditable],input[type=text],input[type=email],input[type=password]{font-size:16px!important}",
 
     // Smooth scroll
     '[class*=scroller]{-webkit-overflow-scrolling:touch!important}',
 
-    // ── Floating back button (top-left, below safe area) ──
+    // Fix menus/popups/modals going off-screen
+    '[class*=modal],[class*=popout],[class*=menu],[class*=tooltip],[class*=layerContainer],[class*=layer]{max-width:100vw!important;max-height:90vh!important}',
+
+    // ── Floating back button ──
     ".vemobile-back-btn{",
     "  display:none;position:fixed;top:calc(env(safe-area-inset-top,0) + 4px);left:8px;z-index:10001;",
     "  width:40px;height:40px;border-radius:50%;border:none;",
@@ -110,23 +123,68 @@
     "  font-size:22px;line-height:40px;text-align:center;cursor:pointer;",
     "  box-shadow:0 2px 8px rgba(0,0,0,0.3);",
     "}",
-    // Show when navigated into a sub-page
     ".vemobile-back-btn.visible{display:block}",
-    // Keyboard hides the back button too
     ".vemobile-keyboard-open .vemobile-back-btn{display:none!important}",
 
-    // ── Bottom nav ──
+    // ── Bottom nav (hidden on login/auth pages) ──
     ".vemobile-nav{position:fixed;bottom:0;left:0;right:0;z-index:10000;display:flex;justify-content:space-around;align-items:center;height:48px;background:#1e1f22;border-top:1px solid #2b2d31;padding-bottom:env(safe-area-inset-bottom,0)}",
     ".vemobile-nav button{flex:1;height:100%;border:none;background:none;color:#949ba4;font-size:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2px;cursor:pointer;gap:1px}",
     ".vemobile-nav button.active{color:#5865f2}",
     ".vemobile-nav button svg{width:22px;height:22px}",
     ".vemobile-keyboard-open .vemobile-nav{display:none!important}",
     ".vemobile-nav button.vemobile-back-highlight{color:#f04747}",
+
+    // Hide nav on login/auth screens
+    ".vemobile-nav.vemobile-hidden{display:none!important}",
+    "#app-mount.vemobile-no-nav{padding-bottom:env(safe-area-inset-bottom,0)!important}",
+
+    // Allow touch-action for Discord's swipe gestures
+    "#app-mount,*{touch-action:manipulation}",
   ].join("\n");
   document.head.appendChild(CSS);
 
   // ═══════════════════════════════════════════════
-  // Floating back button — tracks SPA navigation
+  // Login detection — hide nav on auth pages
+  // ═══════════════════════════════════════════════
+  function isLoginPage() {
+    var h = location.hash || "";
+    var p = location.pathname || "";
+    return (
+      p.indexOf("/login") >= 0 ||
+      /\/register\b/.test(p) ||
+      /\/verify\b/.test(p) ||
+      /\/authenticator\b/.test(p) ||
+      /\/mfa\b/.test(p) ||
+      /\/sms\b/.test(p) ||
+      /\/backup\b/.test(p) ||
+      /^\/$/.test(p) ||
+      (p === "/app" && !h) // Just loaded /app but not logged in yet
+    );
+  }
+
+  function updateNavVisibility() {
+    var nav = document.querySelector(".vemobile-nav");
+    var app = document.getElementById("app-mount");
+    if (!nav) return;
+    if (isLoginPage()) {
+      nav.classList.add("vemobile-hidden");
+      if (app) app.classList.add("vemobile-no-nav");
+    } else {
+      nav.classList.remove("vemobile-hidden");
+      if (app) app.classList.remove("vemobile-no-nav");
+    }
+  }
+
+  // Check on hash/path changes and periodically
+  window.addEventListener("hashchange", updateNavVisibility);
+  window.addEventListener("popstate", updateNavVisibility);
+  var _push = history.pushState;
+  history.pushState = function () { _push.apply(this, arguments); setTimeout(updateNavVisibility, 50); };
+  var _replace = history.replaceState;
+  history.replaceState = function () { _replace.apply(this, arguments); setTimeout(updateNavVisibility, 50); };
+
+  // ═══════════════════════════════════════════════
+  // Floating back button
   // ═══════════════════════════════════════════════
   var backBtn = null;
   function createBackBtn() {
@@ -136,50 +194,32 @@
     backBtn.innerHTML = "←";
     backBtn.title = "Go back";
     backBtn.onclick = function () {
-      // Try browser back first, then fallback to Discord home
-      if (history.length > 1) {
-        history.back();
-      } else {
-        location.hash = "#/channels/@me";
-      }
+      if (history.length > 1) history.back();
+      else location.hash = "#/channels/@me";
     };
     document.body.appendChild(backBtn);
     updateBackVisibility();
   }
 
-  // Show/hide based on whether we're on a sub-page (not root)
   function updateBackVisibility() {
     if (!backBtn) return;
-    // Consider "deeper" if:
-    // 1. Hash has a channel ID (snowflake: 17+ digits)
-    // 2. Or hash has /channels/ and more path after @me
-    // 3. Or we're on a settings/guild-discovery/etc page
     var hash = location.hash;
     var isDeep = (
-      /\d{17,}/.test(hash) ||                         // Channel/DM snowflake
-      /channels\/\d{17,}\//.test(hash) ||             // Server channel
-      /\/settings\b/.test(hash) ||                    // Settings page
-      /\/store\b/.test(hash) ||                       // Store
-      /\/discovery\b/.test(hash) ||                   // Discovery
-      /\/guild-discovery\b/.test(hash)                // Guild discovery
+      /\d{17,}/.test(hash) ||
+      /channels\/\d{17,}\//.test(hash) ||
+      /\/settings\b/.test(hash) ||
+      /\/store\b/.test(hash) ||
+      /\/discovery\b/.test(hash) ||
+      /\/guild-discovery\b/.test(hash)
     );
     backBtn.classList.toggle("visible", isDeep);
-
-    // Also highlight the Home button in nav when we need a back button
     var homeBtn = document.getElementById("vemobile-btn-home");
     if (homeBtn) homeBtn.classList.toggle("vemobile-back-highlight", isDeep);
   }
 
-  // Listen for navigation changes
-  window.addEventListener("popstate", updateBackVisibility);
-  window.addEventListener("hashchange", updateBackVisibility);
-  // Override pushState/replaceState to detect SPA nav
-  var _push = history.pushState;
-  var _replace = history.replaceState;
-  history.pushState = function () { _push.apply(this, arguments); setTimeout(updateBackVisibility, 50); };
-  history.replaceState = function () { _replace.apply(this, arguments); setTimeout(updateBackVisibility, 50); };
-
-  // ── Bottom nav ──
+  // ═══════════════════════════════════════════════
+  // Bottom nav
+  // ═══════════════════════════════════════════════
   function createNav() {
     if (document.querySelector(".vemobile-nav")) return;
     var nav = document.createElement("div");
@@ -194,31 +234,15 @@
 
     function hl(id) {
       nav.querySelectorAll("button").forEach(function (b) { b.classList.remove("active"); });
-      var x = document.getElementById(id);
-      if (x) x.classList.add("active");
+      var x = document.getElementById(id); if (x) x.classList.add("active");
     }
 
-    // Home: navigate to Discord's home
-    document.getElementById("vemobile-btn-home").onclick = function () {
-      hl("vemobile-btn-home");
-      location.hash = "#/channels/@me";
-    };
-
-    // Back: same as browser back or floating back button
-    document.getElementById("vemobile-btn-back").onclick = function () {
-      hl("vemobile-btn-back");
-      if (history.length > 1) history.back();
-      else location.hash = "#/channels/@me";
-    };
-
-    document.getElementById("vemobile-btn-refresh").onclick = function () {
-      location.reload();
-    };
-
+    document.getElementById("vemobile-btn-home").onclick = function () { hl("vemobile-btn-home"); location.hash = "#/channels/@me"; };
+    document.getElementById("vemobile-btn-back").onclick = function () { hl("vemobile-btn-back"); if (history.length > 1) history.back(); else location.hash = "#/channels/@me"; };
+    document.getElementById("vemobile-btn-refresh").onclick = function () { location.reload(); };
     document.getElementById("vemobile-btn-settings").onclick = function () {
       hl("vemobile-btn-settings");
       setTimeout(function () {
-        // Try Vencord settings first
         if (window.Vencord && window.Vencord.Api && window.Vencord.Api.Settings && window.Vencord.Api.Settings.open) {
           window.Vencord.Api.Settings.open();
         } else {
@@ -228,8 +252,8 @@
       }, 200);
     };
 
-    // Show Home as active initially
     hl("vemobile-btn-home");
+    updateNavVisibility();
   }
 
   // ── Keyboard ──
@@ -254,8 +278,9 @@
   setTimeout(function () {
     createNav();
     createBackBtn();
-    // Initial check
     setTimeout(updateBackVisibility, 500);
-    console.log("[Vemobile] Prelude v0.4.0 loaded");
+    // Re-check nav visibility after page fully loads
+    setInterval(updateNavVisibility, 5000);
+    console.log("[Vemobile] Prelude v0.4.2 loaded");
   }, 500);
 })();

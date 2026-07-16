@@ -34,15 +34,19 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
     super.dispose();
   }
 
-  /// Handle system back button: delegate to WebView first, then pop app.
-  Future<bool> _onWillPop() async {
-    if (await _controller.canGoBack()) {
-      _controller.goBack();
-      return false; // Don't pop the Flutter route
-    }
-    // Nothing to go back to — minimize app (platform default)
+  /// Handle system back button: delegate to WebView first, then minimize app.
+  Future<void> _onWillPop() async {
+    try {
+      final canGo = await _controller.canGoBack();
+      if (canGo) {
+        _controller.goBack();
+        // Also update JS back button state after navigation
+        Future.delayed(const Duration(milliseconds: 300), _updateJsBackState);
+        return;
+      }
+    } catch (_) {}
+    // Nothing to go back to — minimize app
     SystemNavigator.pop();
-    return false;
   }
 
   /// Go back in WebView history, with JS fallback for SPAs.
@@ -211,8 +215,8 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
   Widget build(BuildContext context) {
     return PopScope(
       canPop: false,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _onWillPop();
+      onPopInvokedWithResult: (didPop, _) async {
+        if (!didPop) await _onWillPop();
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF202225),
