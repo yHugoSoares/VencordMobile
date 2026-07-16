@@ -32,28 +32,24 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
     super.dispose();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (!_vencordInjected) return;
-    if (state == AppLifecycleState.paused) {
-      _controller.runJavaScript("window.__VEMOBILE__ && window.__VEMOBILE__.callbacks['lifecycle'] && window.__VEMOBILE__.callbacks['lifecycle']({state:'paused'})");
-    } else if (state == AppLifecycleState.resumed) {
-      _controller.runJavaScript("window.__VEMOBILE__ && window.__VEMOBILE__.callbacks['lifecycle'] && window.__VEMOBILE__.callbacks['lifecycle']({state:'resumed'})");
-    }
-  }
-
   WebViewController _createWebView() {
     final ctrl = WebViewController();
     ctrl.setJavaScriptMode(JavaScriptMode.unrestricted);
     ctrl.setBackgroundColor(const Color(0xFF202225));
+
+    // Mobile Android Chrome user-agent → Discord serves responsive mobile web app
+    ctrl.setUserAgent(
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36 '
+      'Vemobile/0.3.0',
+    );
+
     ctrl.setNavigationDelegate(
       NavigationDelegate(
-        onPageStarted: (url) {
+        onPageStarted: (_) {
           if (mounted) setState(() => _isLoading = true);
-          // 3.4: Inject critical CSS as early as possible (DOMContentLoaded → before paint)
-          _injectCriticalCss();
         },
-        onPageFinished: (url) {
+        onPageFinished: (_) {
           if (mounted) setState(() => _isLoading = false);
           _injectVencordBundle();
         },
@@ -61,78 +57,48 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
           debugPrint('[Vemobile] Web error: ${error.description}');
         },
         onNavigationRequest: (request) {
-          // 1.5: Allow same-origin (discord.com), block cross-origin
-          final url = request.url;
-          final currentUri = Uri.tryParse(url);
-          if (currentUri == null) return NavigationDecision.prevent;
+          // Parse the URL properly for host matching (fixes 2FA, auth redirects)
+          final uri = Uri.tryParse(request.url);
+          if (uri == null) return NavigationDecision.navigate;
 
-          // Always allow navigation within discord.com domain
-          if (currentUri.host == 'discord.com' ||
-              currentUri.host.endsWith('.discord.com') ||
-              currentUri.host.endsWith('.discordapp.com') ||
-              currentUri.host.endsWith('.discordapp.net') ||
-              currentUri.host.endsWith('.discord.gg') ||
-              currentUri.host.endsWith('.discord.media') ||
-              currentUri.host.endsWith('.discordcdn.com')) {
+          // Allow all Discord-owned domains
+          if (uri.host == 'discord.com' ||
+              uri.host.endsWith('.discord.com') ||
+              uri.host.endsWith('.discordapp.com') ||
+              uri.host.endsWith('.discordapp.net') ||
+              uri.host.endsWith('.discord.gg') ||
+              uri.host.endsWith('.discord.media') ||
+              uri.host.endsWith('.discordcdn.com')) {
             return NavigationDecision.navigate;
           }
 
-          // Also allow captcha providers
-          if (currentUri.host.endsWith('hcaptcha.com') ||
-              currentUri.host.endsWith('recaptcha.net') ||
-              currentUri.host.endsWith('google.com/recaptcha') ||
-              currentUri.host.endsWith('cloudflare.com')) {
+          // Allow auth/captcha providers (needed for login + 2FA)
+          if (uri.host.endsWith('hcaptcha.com') ||
+              uri.host.endsWith('recaptcha.net') ||
+              uri.host == 'www.google.com' ||
+              uri.host.endsWith('.google.com') ||
+              uri.host.endsWith('cloudflare.com') ||
+              uri.host.endsWith('stripe.com') ||
+              uri.host.endsWith('paypal.com')) {
             return NavigationDecision.navigate;
           }
 
-          // Everything else: open in native browser
-          _openExternalUrl(url);
+          // Everything else — open in native browser
+          _openExternalUrl(request.url);
           return NavigationDecision.prevent;
         },
       ),
     );
+
     ctrl.addJavaScriptChannel(
       'VemobileBridge',
       onMessageReceived: (message) => _jsBridge.handleJsMessage(ctrl, message.message),
     );
 
-    // Use iPad Safari user-agent — gets Discord's desktop app (with full features)
-    // but with touch-aware behavior (better than desktop Chrome UA on mobile)
-    ctrl.setUserAgent(
-      'Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 '
-      '(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1 '
-      'Vemobile/0.2.0',
-    );
-
+    // Load Discord directly — no fragment, Discord handles initial route
     ctrl.loadRequest(Uri.parse('https://discord.com/app'));
-    return ctrl;
-  }
 
-  /// 3.4: Inject critical CSS before Discord renders (DOMContentLoaded hook)
-  Future<void> _injectCriticalCss() async {
-    try {
-      final vemobileCss = await rootBundle.loadString('assets/vemobile.css');
-      // Escape for JS string interpolation
-      final css = vemobileCss
-          .replaceAll('\\', '\\\\')
-          .replaceAll("'", "\\'")
-          .replaceAll('\n', '\\n')
-          .replaceAll('\r', '');
-      await _controller.runJavaScript("""
-        // 3.4: Inject Vencord CSS on DOMContentLoaded (before Discord paints)
-        document.addEventListener('DOMContentLoaded', function injectStyles() {
-          var s = document.getElementById('vemobile-styles');
-          if (!s) {
-            s = document.createElement('style');
-            s.id = 'vemobile-styles';
-            (document.head || document.documentElement).appendChild(s);
-          }
-          s.textContent = '$css';
-        }, { once: true });
-      """);
-    } catch (e) {
-      debugPrint('[Vemobile] Critical CSS pre-injection failed: $e');
-    }
+    return ctrl;
   }
 
   Future<void> _injectVencordBundle() async {
@@ -140,11 +106,9 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
     _vencordInjected = true;
 
     try {
-      // Inject main Vencord bundle (prelude + Vencord + patches)
       final vemobileJs = await rootBundle.loadString('assets/vemobile.js');
       await _controller.runJavaScript(vemobileJs);
-
-      debugPrint('[Vemobile] Bundle injected successfully');
+      debugPrint('[Vemobile] Bundle injected');
     } catch (e) {
       debugPrint('[Vemobile] Bundle injection failed: $e');
       _vencordInjected = false;
@@ -161,7 +125,6 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
     } catch (_) {}
   }
 
-  /// Show a dialog offering to open the native Discord app for calls
   void _showCallFallbackDialog() {
     showDialog(
       context: context,
@@ -169,7 +132,7 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
         backgroundColor: const Color(0xFF2B2D31),
         title: const Text('Voice/Video Calls', style: TextStyle(color: Colors.white)),
         content: const Text(
-          'WebRTC voice/video calls are not supported in this WebView.\n\n'
+          'WebRTC voice/video calls are not supported in this version.\n\n'
           'Open the native Discord app for calls?',
           style: TextStyle(color: Color(0xFF949BA4)),
         ),
