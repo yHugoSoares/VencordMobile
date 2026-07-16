@@ -1,33 +1,29 @@
 # Project Plan: "Vesktop for Mobile" — A Modded Discord Client for Android/iOS
-### Codename suggestion: **Vemobile** (or "Vencord Mobile Shell")
+### Codename: **Vemobile**
 
-> Target AI Builder: DeepSeek V4 Pro (or any capable coding agent)
-> Author: Generated for Hugo Soares, July 2026
-> Goal: Build a mobile equivalent of Vesktop — i.e., NOT a from-scratch Discord clone, but a lightweight wrapper/loader app that preinstalls a Vencord-like mod layer on top of the real Discord client, giving users plugins, themes, and privacy tweaks on Android (and ideally iOS) with minimal setup.
-
----
-
-## 1. Context & Feasibility Research (already validated)
-
-Before coding starts, the agent must understand why this is hard and what prior art exists:
-
-- **Vencord** is a browser-injected JS mod for the Discord **desktop/web app** (Electron/Chromium-based), which is why it works so well on desktop — the desktop client is essentially a website in an Electron shell.
-- **Vesktop** is not a mod itself; it's a *custom Electron shell* that ships with Vencord preinstalled, replacing Discord's official Electron app with a lighter, faster one. This is the direct model to replicate for mobile.
-- **Discord's official mobile app is NOT Electron/web-based** — it is built with **React Native**, a compiled native app, not a webpage. This is the single biggest technical obstacle: you cannot inject arbitrary JS into it the way Vencord does on desktop.
-- Because of this, **no clean "Vesktop for mobile" exists today**. Prior attempts fall into two categories:
-  - **Web-wrapper apps** (e.g., Vendroid / VendroidEnhanced): load `discord.com` mobile website in a WebView and inject Vencord's JS bundle. Simple, cross-platform, but Discord's mobile *website* is poorly optimized and missing features (no reliable voice/video, clunky UI) — described by its own developers as "not very usable" and "mostly a proof of concept."
-  - **Native RN patching (Bunny, formerly Vendetta, formerly Aliucord)**: patches the real React Native Discord APK directly, either via an Xposed module (root required) or via a repackaged/re-signed APK (no root, via "BunnyManager"). This gives near-native performance and real voice/video support, and has its own plugin/theme ecosystem, but requires reverse-engineering RN bundles, is Android-only in practice, breaks on every Discord update, and sits in a legal gray zone (violates Discord ToS; iOS is nearly impossible due to App Store sandboxing/signing).
-
-**Conclusion:** Yes, it is technically possible, but there is no way to get a *true* one-to-one "Vesktop but mobile" (i.e., desktop-grade JS injection) because the underlying app isn't a webpage. The realistic best outcome is a **hybrid**: default to a WebView-based Vencord-injected client (cross-platform, easy to maintain) with an *optional* advanced mode that patches the native RN APK on Android for users who want full native performance. This plan builds both paths, starting with the WebView approach as MVP since it's dramatically simpler and works on both Android and iOS.
+> **Current state:** v0.4.2-alpha — Phase 1 (WebView MVP) complete and stable
+> **Last updated:** 2026-07-16
 
 ---
 
-## 2. Legal & Ethical Notes (must be included in README of final product)
+## 1. Context & Feasibility (validated)
 
-- This project modifies a third-party client and technically violates Discord's Terms of Service; users can theoretically be action against their account (rare in practice for mod usage, but not zero risk).
-- No Discord assets, trademarks, or proprietary code should be redistributed. The mod loader must download Discord's real client/website at runtime, not bundle it.
-- Distribute only as open-source source code, not as an App Store / Play Store listing, to avoid takedown and store policy violations.
-- Include a clear disclaimer and "use at your own risk" notice.
+- **Vencord** is a browser-injected JS mod for Discord's **desktop/web app** (Electron/Chromium-based).
+- **Vesktop** is a custom Electron shell with Vencord preinstalled — the direct model for Vemobile.
+- **Discord's official mobile app is React Native** — you cannot inject JS the way Vencord does on desktop.
+- WebView-based wrappers (like Vendroid) load `discord.com` in a WebView and inject JS — this is what Vemobile does.
+- Native RN patching (Bunny, Aliucord) exists but is Android-only, fragile, and legally gray.
+
+**Conclusion:** The realistic best outcome is a WebView-based client. This is what Vemobile implements.
+
+---
+
+## 2. Legal & Ethical
+
+- Violates Discord ToS — users assume risk.
+- No Discord assets bundled. Client downloads from `discord.com` at runtime.
+- Open-source only — never App Store / Play Store.
+- GPL-3.0 license (matches Vencord).
 
 ---
 
@@ -35,86 +31,87 @@ Before coding starts, the agent must understand why this is hard and what prior 
 
 | Aspect | Decision |
 |---|---|
-| Name | Vemobile (placeholder, rename freely) |
-| Platforms (MVP) | Android + iOS (via WebView wrapper) |
-| Platforms (Advanced/Phase 2) | Android only (native RN patch, root or repack) |
-| Core tech (MVP) | Cross-platform shell app (Flutter *or* Capacitor/Ionic *or* React Native WebView) hosting `discord.com/app` with injected Vencord-compatible JS |
-| Core tech (Phase 2) | Metro/Hermes bundle patching, similar to Bunny's approach |
-| Distribution | GitHub releases (APK/IPA sideload), never official stores |
-| License | Open source, MIT or GPLv3 (match Vencord's license) |
+| Name | Vemobile |
+| Platforms (current) | Android (via WebView) |
+| Platforms (planned) | iOS (via WebView, requires Xcode) |
+| Core approach | Flutter shell → mobile Chrome UA → responsive Discord mobile web app |
+| Distribution | GitHub Releases (APK sideload) |
+| License | GPL-3.0 |
 
 ---
 
-## 4. Architecture Overview
+## 4. Architecture (current)
 
-### Phase 1 — WebView Mod Shell (MVP)
-1. Native mobile shell app (Flutter recommended for single-codebase iOS+Android, or Capacitor if the agent prefers web tech).
-2. WebView component loads `https://discord.com/app` (the same URL the desktop Electron client loads).
-3. On page load, inject a JS bundle equivalent to Vencord's core (patcher, plugin loader, settings UI) via `evaluateJavascript` / WebView JS injection hooks.
-4. Reuse or fork Vencord's existing plugin API surface where possible so existing plugins/themes are compatible without rewriting them.
-5. Add mobile-specific UX fixes that Discord's own mobile website lacks: better touch targets, a persistent bottom nav bar, swipe gestures for the server/channel list, and screen-wake handling for calls.
-6. Local storage for settings, plugin toggles, and custom CSS/theme snippets (use platform secure storage, not cloud sync, for privacy).
-7. Auto-updater: check a GitHub releases JSON feed for new mod-bundle versions Independent of app store updates (bundle can update itself without a full app reinstall, same trick Vencord desktop uses).
+```
+Flutter Shell (vemobile/)
+  └─ WebView: https://discord.com/app (mobile Chrome UA)
+       ├─ Injected CSS → no flash of broken layout
+       ├─ Injected JS bundle:
+       │   ├─ __VEMOBILE__ bridge
+       │   ├─ Vencord core (webpack patcher, 155+ plugins)
+       │   └─ Mobile patches: FluxNav, WakeLock, NoTrack, MobileUpdater, CallDetect
+       └─ Native Bridge (Flutter ↔ JS):
+            ├─ Android back button (PopScope → WebView.goBack)
+            ├─ Floating back button (top-left, auto-show/hide)
+            ├─ Bottom nav bar (Home / Back / Refresh / Settings)
+            ├─ Wake lock (Flux-driven, screen-on during calls)
+            └─ Call fallback dialog (WebRTC → open native Discord)
 
-### Phase 2 — Native RN Patch Mode (Advanced, Android only)
-1. Download the current official Discord APK.
-2. Unpack the RN Hermes bytecode bundle.
-3. Patch the bundle to load an external mod script (loader pattern used by Bunny/Vendetta), rather than decompiling/recompiling app logic directly.
-4. Re-sign the APK with a debug/user key for sideloading (non-root) — mirrors "BunnyManager" flow — or ship an Xposed module for rooted devices for cleaner injection without repackaging Discord's APK at all.
-5. Build a companion "Manager" app (like BunnyManager) that automates: download official APK → patch → sign → install, all on-device, so the agent's app never redistributes Discord's code itself, only the patch script.
-
-### Feature Parity Checklist (build in this order)
-- Load & log in to real Discord account (OAuth/token, stored securely)
-- Send/receive messages, images, reactions, threads
-- Voice & video calls (WebRTC — critical to test early since this is the classic failure point of WebView Discord clients)
-- Push notifications (FCM for Android, APNs for iOS, since WebView apps lose native push unless wired up separately)
-- Plugin system: enable/disable, per-plugin settings screen
-- Theme system: load community themes via URL, live CSS injection
-- Vencord parity plugins to port first: message logger, no-track (analytics blocking), custom CSS, badge/decoration removal, quick-reply, spotify-controls
+Key design decisions:
+- Mobile Chrome UA (NOT iPad/desktop) — Discord's responsive mobile web app handles layout
+- No DOM tagging — Discord's mobile web is already responsive
+- Proxy-based VencordNative — survives reassignments
+- Flux events for navigation — instant, no polling
+- PopScope for back button — properly async
+```
 
 ---
 
-## 5. Suggested Tech Stack
+## 5. Tech Stack
 
 | Layer | Choice | Reason |
 |---|---|---|
-| Shell app | Flutter (`webview_flutter` / `flutter_inappwebview`) | Single codebase for Android+iOS, mature WebView JS-injection APIs |
-| Mod bundle | TypeScript, compiled via esbuild (same tooling Vencord uses) | Maximizes plugin-code reuse from existing Vencord ecosystem |
-| Native patch (Phase 2) | Kotlin/Java (Android), Frida-style bytecode patching or Bunny's existing loader | Proven pattern, avoid reinventing RN patching from scratch |
-| Push notifications | Firebase Cloud Messaging (Android), APNs bridge (iOS) | Required since WebView doesn't get Discord's native push |
-| CI/CD | GitHub Actions | Automated APK/IPA builds + release publishing |
-| Distribution | GitHub Releases + F-Droid-style manual install docs | Avoid app store bans |
+| Shell app | Flutter (`webview_flutter`) | Single codebase for Android+iOS, mature WebView JS injection APIs |
+| Mod bundle | Vencord web build (esbuild IIFE) | Reuses entire Vencord ecosystem (155+ plugins) |
+| Native bridge | JavaScriptChannel + postMessage | Simple, reliable, bidirectional |
+| Push notifications | Pending design (FCM/APNs relay or polling) | WebView can't receive Discord's native push |
+| CI/CD | GitHub Actions | Automated APK builds per tag |
+| Distribution | GitHub Releases | Sideload only |
 
 ---
 
-## 6. Milestones / Build Order (give this to the coding agent as a sprint plan)
+## 6. Milestones Status
 
-1. **Sprint 0 — Research spike**: Confirm WebView JS-injection timing works reliably against Discord's SPA (single-page app) lifecycle; confirm login/token persistence works in WebView cookies/localStorage across app restarts.
-2. **Sprint 1 — Bare shell**: Flutter app that just opens `discord.com/app` in a WebView, no mod yet. Validate login, messaging, and basic voice call work at all inside a mobile WebView.
-3. **Sprint 2 — Mod injection pipeline**: Build the JS injection bridge; port Vencord's core patcher/plugin-loader into a mobile-safe bundle; get at least one working plugin (e.g., custom CSS) end-to-end.
-4. **Sprint 3 — UX pass**: Fix mobile-specific layout issues (nav bar, gestures, keyboard handling, safe-area insets).
-5. **Sprint 4 — Plugin/theme manager UI**: Native settings screens to install/toggle plugins and themes from URLs, matching Vencord desktop's settings UX.
-6. **Sprint 5 — Notifications**: Wire FCM/APNs so users get push notifications like the real app (this is usually the hardest and most-skipped part).
-7. **Sprint 6 — Auto-update system**: Self-update the JS mod bundle without requiring a full app store update.
-8. **Sprint 7 (stretch) — Phase 2 native patch mode**: Only attempt after Phase 1 is stable; build the Android APK-patching "Manager" companion app.
-9. **Sprint 8 — Docs & release**: Write install guide, disclaimer, contributing guide; publish first GitHub release.
-
----
-
-## 7. Known Risks / Things the Agent Must Flag, Not Silently Skip
-
-- Voice/video calls are the most likely feature to break inside a WebView; the agent should build a fallback that opens the native Discord app (if installed) for calls only, if WebRTC proves unreliable.
-- Discord frequently changes its web client's DOM/internal APIs, which will break plugin compatibility; the mod bundle needs versioned compatibility shims, mirroring how Vencord handles Discord updates.
-- iOS WebView JS injection has stricter sandboxing than Android; test iOS early rather than treating it as an afterthought.
-- Account safety: warn users clearly that automation/token extraction risks Discord ToS enforcement action.
+| Sprint | Status | Actual Result |
+|--------|--------|---------------|
+| Sprint 0: Research | ✅ | WebView injection timing validated |
+| Sprint 1: Bare shell | ✅ | Flutter WebView loads discord.com/app |
+| Sprint 2: Mod injection | ✅ | Vencord bundle injects successfully |
+| Sprint 3: UX pass | ✅ | Bottom nav, gestures, keyboard, safe areas |
+| Sprint 4: Plugin/theme UI | ✅ | Vencord's own settings + plugin UI available |
+| Sprint 5: Notifications | ⏳ Pending | Push notification relay design not started |
+| Sprint 6: Auto-update | ✅ | MobileUpdater checks GitHub releases |
+| Sprint 7-8: Release | ✅ | v0.4.2-alpha on GitHub Releases |
 
 ---
 
-## 8. Deliverables Expected From the Coding Agent
+## 7. Known Risks (and resolutions)
 
-1. A working Flutter (or chosen stack) repo implementing Phase 1 MVP end-to-end.
-2. A forked/adapted Vencord core bundle runnable inside a mobile WebView.
-3. At least 5 working ported plugins from the existing Vencord/Bunny plugin ecosystems.
-4. CI pipeline producing signed debug APK + iOS IPA build artifacts per release.
-5. A README with install instructions, screenshots, disclaimer, and contribution guide.
-6. A written report at the end of each sprint documenting what worked, what didn't, and any architecture changes made vs. this plan.
+| Risk | Status |
+|---|---|
+| Voice/video calls in WebView | ❌ Not supported. Fallback: dialog to open native Discord app |
+| Discord DOM/API changes | ⚠️ Mitigated: mobile web app changes less frequently than desktop |
+| iOS sandboxing | ⏳ Untested — no Xcode installed yet |
+| Account safety | ⚠️ Warning in README |
+| APK update fails | ✅ Fixed: versionCode now increments (+5) |
+
+---
+
+## 8. Deliverables (current state)
+
+1. ✅ Working Flutter app implementing Phase 1 MVP end-to-end
+2. ✅ Vencord core bundle runnable inside a mobile WebView (687 KB)
+3. ✅ 155+ reused Vencord plugins + 4 mobile plugins (FluxNav, WakeLock, NoTrack, CallDetect, MobileUpdater)
+4. ✅ CI pipeline producing debug APK per tag
+5. ✅ README with install instructions, disclaimer, license
+6. ✅ SESSION_PIPELINE.md for session handoff

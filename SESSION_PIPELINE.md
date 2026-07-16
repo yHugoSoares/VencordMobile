@@ -3,7 +3,7 @@
 > **Purpose:** This document is a full project dump for new AI sessions. It contains everything needed to understand the codebase, pick up where the last session left off, and continue building without rediscovering anything.
 
 **Last updated:** 2026-07-16  
-**Current version:** v0.4.0-alpha  
+**Current version:** v0.4.2-alpha  
 **Active branch:** `master`
 
 ---
@@ -109,9 +109,23 @@ Think of it as "Vesktop for mobile" — a custom shell that loads Discord's web 
 
 ---
 
-## 4. What Was Fixed in This Session (v0.4.0-alpha)
+## 4. What Was Fixed (v0.4.0–v0.4.2)
 
-### Back Navigation (Complete)
+### v0.4.2 — UX Polish
+
+- **Side-swipe for server list**: Removed `overflow-x:hidden` from `html,body` (was blocking Discord's touch gesture for opening the server drawer). Added `touch-action: manipulation` to allow horizontal touch scrolling.
+- **Calls "Browser not supported"**: Added `MediaStream`, `MediaStreamTrack`, `webkitRTCPeerConnection` stubs. Discord's browser check was detecting the absence of these APIs even when `RTCPeerConnection` was stubbed.
+- **Niche menus/popups off-screen**: Extended max-width CSS to cover `[class*=popout]`, `[class*=menu]`, `[class*=tooltip]`, `[class*=layerContainer]`, `[class*=layer]`.
+- **Back button async race**: `PopScope.onPopInvokedWithResult` now properly `async` with `await _onWillPop()`.
+- **Nav auto-hides on login**: Detects pathname `/login`, `/verify`, `/mfa`, `/register`, `/sms` etc. Adds `.vemobile-hidden` class to nav and `.vemobile-no-nav` to `#app-mount` to adjust safe-area padding. Re-checks every 5 seconds.
+- **Call detection regex tightened**: Added `not (support|available|work)` pattern.
+
+### v0.4.1 — APK Update Fix
+
+- **versionCode**: Bumped from `+1` to `+5` (was always `+1` — Android rejected every update thinking it was the same app)
+- **Release APK removed from CI**: R8 minification strips JavaScript bridge classes used by `webview_flutter`. Debug APK is signed with a consistent debug keystore and used for all sideloading.
+
+### Back Navigation (v0.4.0 — Complete)
 
 **Problem:** Android back button exited the app instead of going back in WebView history. Discord's SPA didn't register its navigations in browser history.
 
@@ -127,7 +141,7 @@ Think of it as "Vesktop for mobile" — a custom shell that loads Discord's web 
 - **Bottom nav "Back" button** also works the same way
 - **Keyboard hide**: `.vemobile-keyboard-open` hides both nav and back button
 
-### Safe Areas (Complete)
+### Safe Areas (v0.4.0 — Complete)
 
 **Flutter side:** `SafeArea(top: true, bottom: false)` — system status bar respected, bottom handled by CSS.
 
@@ -145,7 +159,7 @@ Think of it as "Vesktop for mobile" — a custom shell that loads Discord's web 
 }
 ```
 
-### Bottom Nav (Complete)
+### Bottom Nav (v0.4.0 — Complete)
 
 4 buttons: Home (DM list), Back, Refresh, Settings. Home highlighted initially. Settings tries Vencord's own settings API first, falls back to Discord DOM click.
 
@@ -235,12 +249,12 @@ CI triggers on push to `master`/`main` and on tags `v*`. It:
 
 | Tag | Date | Key Changes |
 |-----|------|-------------|
-| `v0.4.0-alpha` | Jul 2026 | Back navigation (PopScope + WebView history + JS back button), safe areas (Flutter + CSS), mobile Chrome UA, no DOM tagging, VencordNative proxy, 0.4.0 version bump |
-| `v0.3.0-alpha` | Jul 2026 | Mobile UA switch to mobile Chrome, removed DOM tagging, FluxNav event-driven navigation, CallDetect with console interception + amber banner, CSS transitions, optimized patch loading |
-| `v0.2.0-beta` | Jul 2026 | DOM tagging 100x faster, snowflake hash detection, Proxy VencordNative, keyboard CSS, NoTrack regex fix, Flux events, wake lock, loading overlay, CSS-early injection, hashchange event (no polling) |
-| `v0.1.2` | Jul 2026 | Early releases with DOM tagging, desktop UA, basic injection |
-| `v0.1.1` | Jul 2026 | — cleaned up |
-| `v0.1.0` | Jul 2026 | Initial WebView shell, basic Vencord injection |
+| `v0.4.2-alpha` | Jul 2026 | Side-swipe fix, "Browser not supported" call stubs, menu/popup CSS, async back fix, login nav hiding |
+| `v0.4.1-alpha` | Jul 2026 | versionCode +5, removed release APK from CI |
+| `v0.4.0-alpha` | Jul 2026 | Back navigation (PopScope + WebView history + JS back button), safe areas (Flutter + CSS), bottom nav, mobile Chrome UA (switched from iPad), no DOM tagging, VencordNative proxy |
+| `v0.3.0-alpha` | Jul 2026 | Mobile UA switch to Android Chrome, removed DOM tagging entirely, FluxNav event-driven navigation, CallDetect with console interception + amber banner, CSS transitions |
+| `v0.2.0-beta` | Jul 2026 | Original UI overhaul (18 fixes). DOM tagging 100x faster, snowflake hash detection, Proxy VencordNative, keyboard CSS, NoTrack regex fix, hashchange event, event-driven wake lock, loading overlay, CSS-early injection |
+| `v0.1.x` | Jul 2026 | Early releases with desktop UA + DOM tagging. All superseded. Left on `dev` branch. |
 
 ---
 
