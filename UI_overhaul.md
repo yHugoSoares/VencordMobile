@@ -55,7 +55,36 @@ Discord's desktop web app (960px+ design) on phone screens (360-414px). Current 
 | Sprint 1: Critical Fixes | ✅ completed |
 | Sprint 2: Navigation & UX | ✅ completed |
 | Sprint 3: Performance | ✅ completed |
-| Sprint 4: Release | ⬜ pending |
+| Sprint 4: Release | ✅ completed |
+
+---
+
+## Sprint 4 Summary — Completed
+
+### 4.1 Version Bump
+- `pubspec.yaml`: 0.1.0+1 → 0.2.0+1
+- `webview_shell.dart`: Vemobile/0.1.0 → Vemobile/0.2.0 user-agent
+- `js_bridge.dart`: appVersion 0.1.0 → 0.2.0
+- `vemobile-prelude.js`: already at 0.2.0 (set in Sprint 1)
+
+### 4.2 Build & Release
+- APK built: 704 KB bundle, ~150 MB debug APK
+- Tag: `v0.2.0-beta`
+- Release: https://github.com/yHugoSoares/VencordMobile/releases/tag/v0.2.0-beta
+- Old releases (v0.1.0, v0.1.1, v0.1.2) cleaned up
+
+---
+
+## Total Sprint Summary
+
+| Sprint | Fixes | Key Change |
+|--------|-------|-----------|
+| 1 | 7 | DOM tagging 100x faster, snowflake hash, Proxy VencordNative, keyboard CSS, NoTrack regex |
+| 2 | 5 | FluxNav (instant navigation), CSS transitions, Vencord settings, CallDetect banner |
+| 3 | 5 | hashchange event (0 CPU), event-driven wake lock, loading overlay, CSS-early injection |
+| 4 | 1 | Version bump + GitHub release |
+
+**Total: 18 fixes across 4 sprints**
 
 ---
 
