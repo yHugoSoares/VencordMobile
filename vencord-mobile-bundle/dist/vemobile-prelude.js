@@ -40,26 +40,117 @@
     document.head.appendChild(vp);
   }
 
-  // ── WebRTC stubs + browser support override ──
+  // ── WebRTC stubs — complete prototypes so Discord's browser check passes ──
   if (!navigator.mediaDevices) navigator.mediaDevices = {};
+
+  // getUserMedia — reject so call doesn't actually start (WebView has no mic/camera)
   if (!navigator.mediaDevices.getUserMedia) {
-    navigator.mediaDevices.getUserMedia = function () { return Promise.reject(new Error("WebView")); };
+    navigator.mediaDevices.getUserMedia = function () {
+      return Promise.reject(new DOMException("NotAllowedError", "NotAllowedError"));
+    };
   }
+
+  // enumerateDevices — return empty list
   if (!navigator.mediaDevices.enumerateDevices) {
     navigator.mediaDevices.enumerateDevices = function () { return Promise.resolve([]); };
   }
+
+  // getSupportedConstraints — return empty object
+  if (!navigator.mediaDevices.getSupportedConstraints) {
+    navigator.mediaDevices.getSupportedConstraints = function () { return {}; };
+  }
+
+  // RTCPeerConnection — full prototype so Discord sees a "real" implementation
   if (!window.RTCPeerConnection) {
-    window.RTCPeerConnection = function () { throw new Error("WebRTC not available"); };
+    var RTCStub = {};
+    RTCStub.createOffer = function () { return Promise.resolve({ sdp: "", type: "offer" }); };
+    RTCStub.createAnswer = function () { return Promise.resolve({ sdp: "", type: "answer" }); };
+    RTCStub.setLocalDescription = function () { return Promise.resolve(); };
+    RTCStub.setRemoteDescription = function () { return Promise.resolve(); };
+    RTCStub.addIceCandidate = function () { return Promise.resolve(); };
+    RTCStub.addTrack = function () {};
+    RTCStub.removeTrack = function () {};
+    RTCStub.close = function () {};
+    RTCStub.getStats = function () { return Promise.resolve(new Map()); };
+    RTCStub.getSenders = function () { return []; };
+    RTCStub.getReceivers = function () { return []; };
+    RTCStub.getLocalStreams = function () { return []; };
+    RTCStub.getRemoteStreams = function () { return []; };
+
+    window.RTCPeerConnection = function () {
+      this.createOffer = RTCStub.createOffer;
+      this.createAnswer = RTCStub.createAnswer;
+      this.setLocalDescription = RTCStub.setLocalDescription;
+      this.setRemoteDescription = RTCStub.setRemoteDescription;
+      this.addIceCandidate = RTCStub.addIceCandidate;
+      this.addTrack = RTCStub.addTrack;
+      this.removeTrack = RTCStub.removeTrack;
+      this.close = RTCStub.close;
+      this.getStats = RTCStub.getStats;
+      this.getSenders = RTCStub.getSenders;
+      this.getReceivers = RTCStub.getReceivers;
+      this.getLocalStreams = RTCStub.getLocalStreams;
+      this.getRemoteStreams = RTCStub.getRemoteStreams;
+      this.localDescription = null;
+      this.remoteDescription = null;
+      this.signalingState = "stable";
+      this.iceConnectionState = "new";
+      this.connectionState = "new";
+      this.ontrack = null;
+      this.onicecandidate = null;
+      this.oniceconnectionstatechange = null;
+    };
+    window.RTCPeerConnection.prototype = RTCStub;
   }
-  // Override Discord's browser support check — it checks API existence
-  // and may show "Browser not supported" even with stubbed RTCPeerConnection
-  window.webkitRTCPeerConnection = window.RTCPeerConnection;
+
+  if (!window.webkitRTCPeerConnection) {
+    window.webkitRTCPeerConnection = window.RTCPeerConnection;
+  }
+
+  // RTCSessionDescription / RTCIceCandidate — Discord may check these exist
+  if (!window.RTCSessionDescription) {
+    window.RTCSessionDescription = function (desc) {
+      this.type = (desc && desc.type) || "offer";
+      this.sdp = (desc && desc.sdp) || "";
+    };
+  }
+  if (!window.RTCIceCandidate) {
+    window.RTCIceCandidate = function (cand) {
+      this.candidate = (cand && cand.candidate) || "";
+      this.sdpMLineIndex = (cand && cand.sdpMLineIndex) || 0;
+      this.sdpMid = (cand && cand.sdpMid) || "";
+    };
+  }
+
+  // MediaStream — full prototype
   if (!window.MediaStream) {
-    window.MediaStream = function () {};
-    window.MediaStream.prototype = {};
+    window.MediaStream = function () {
+      this.id = "vemobile-fake-stream";
+      this.active = false;
+    };
+    window.MediaStream.prototype = {
+      getTracks: function () { return []; },
+      getAudioTracks: function () { return []; },
+      getVideoTracks: function () { return []; },
+      addTrack: function () {},
+      removeTrack: function () {},
+      getTrackById: function () { return null; },
+    };
   }
+
+  // MediaStreamTrack
   if (!window.MediaStreamTrack) {
-    window.MediaStreamTrack = function () {};
+    window.MediaStreamTrack = function () {
+      this.kind = "audio";
+      this.enabled = false;
+      this.readyState = "ended";
+      this.id = "vemobile-fake-track";
+    };
+    window.MediaStreamTrack.prototype = {
+      stop: function () {},
+      clone: function () { return new window.MediaStreamTrack(); },
+      applyConstraints: function () { return Promise.resolve(); },
+    };
   }
 
   // ── VencordNative proxy ──
@@ -138,8 +229,7 @@
     ".vemobile-nav.vemobile-hidden{display:none!important}",
     "#app-mount.vemobile-no-nav{padding-bottom:env(safe-area-inset-bottom,0)!important}",
 
-    // Allow touch-action for Discord's swipe gestures
-    "#app-mount,*{touch-action:manipulation}",
+    // Don't override touch-action — let Discord handle all gestures natively.
   ].join("\n");
   document.head.appendChild(CSS);
 
