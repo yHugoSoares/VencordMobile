@@ -54,8 +54,31 @@ Discord's desktop web app (960px+ design) on phone screens (360-414px). Current 
 |--------|--------|
 | Sprint 1: Critical Fixes | ✅ completed |
 | Sprint 2: Navigation & UX | ✅ completed |
-| Sprint 3: Performance | ⬜ pending |
+| Sprint 3: Performance | ✅ completed |
 | Sprint 4: Release | ⬜ pending |
+
+---
+
+## Sprint 3 Summary — Completed
+
+### 3.1 Hashchange Event (no more polling)
+- **Before:** `setInterval` every 300ms checking `location.hash` — wastes CPU
+- **After:** Native `hashchange` event listener. Fires exactly when the URL hash changes. Zero CPU overhead between navigations.
+
+### 3.2 WakeLock Event-Driven
+- **Before:** `setInterval` every 5s polling DOM query for voice/call elements
+- **After:** Primary: Flux events (`VOICE_CHANNEL_SELECT` → acquire, `RTC_CONNECTION_STATE/DISCONNECTED` + `VOICE_CHANNEL_LEAVE` → release). Secondary fallback: 5s DOM polling only if Flux events unavailable. Wake lock is acquired/released INSTANTLY on call state change, not up to 5 seconds later.
+
+### 3.3 Loading Overlay
+- **Before:** No visual feedback during view transitions
+- **After:** Semi-transparent overlay with spinner shown during view switches (200ms max). CSS: `.vemobile-loading-overlay` with `position: fixed; z-index: 9998`. Spinner animation at 60fps.
+
+### 3.4 CSS Injected Before Paint
+- **Before:** CSS injected at `onPageFinished` → Discord renders desktop layout first, then our CSS applies → visible flash
+- **After:** CSS script injected at `onPageStarted` with `DOMContentLoaded` listener. The style element is created BEFORE Discord's React renders. No more flash of broken desktop layout.
+
+### 3.5 User-Agent
+- Deferred — iPad Safari UA works well enough for now. Desktop Chrome UA testing can happen later.
 
 ---
 

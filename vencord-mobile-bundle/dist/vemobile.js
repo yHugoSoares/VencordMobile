@@ -160,6 +160,18 @@
     "  from{opacity:0;transform:translateX(30px)}",
     "  to{opacity:1;transform:translateX(0)}",
     "}",
+
+    // ── 3.3 Loading overlay for view transitions ──
+    ".vemobile-loading-overlay{",
+    "  display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:9998;",
+    "  background:rgba(32,34,37,0.8);justify-content:center;align-items:center",
+    "}",
+    ".vemobile-loading .vemobile-loading-overlay{display:flex}",
+    ".vemobile-spinner{",
+    "  width:32px;height:32px;border:3px solid #5865f2;border-top-color:transparent;",
+    "  border-radius:50%;animation:vemobile-spin 0.6s linear infinite",
+    "}",
+    "@keyframes vemobile-spin{to{transform:rotate(360deg)}}",
   ].join("\n");
   document.head.appendChild(CSS);
 
@@ -252,24 +264,38 @@
   }
 
   function goHome() {
+    showLoading();
     document.body.classList.remove("vemobile-chat", "vemobile-guilds", "vemobile-show-members");
     document.body.classList.add("vemobile-home");
     window.__VEMOBILE__.view = "home";
     highlightNav("channels");
+    setTimeout(hideLoading, 200);
   }
 
   function goToChat() {
+    showLoading();
     document.body.classList.remove("vemobile-home", "vemobile-guilds", "vemobile-show-members");
     document.body.classList.add("vemobile-chat");
     window.__VEMOBILE__.view = "chat";
     highlightNav("chat");
+    setTimeout(hideLoading, 200);
   }
 
   function goToGuilds() {
+    showLoading();
     document.body.classList.remove("vemobile-home", "vemobile-chat", "vemobile-show-members");
     document.body.classList.add("vemobile-guilds");
     window.__VEMOBILE__.view = "guilds";
     highlightNav("servers");
+    setTimeout(hideLoading, 200);
+  }
+
+  function showLoading() {
+    document.body.classList.add("vemobile-loading");
+  }
+
+  function hideLoading() {
+    document.body.classList.remove("vemobile-loading");
   }
 
   function highlightNav(active) {
@@ -281,18 +307,10 @@
 
   // ── Navigation detection ──
   function setupNavigationDetection() {
-    // URL hash change — use native event (3.1 later: replace setInterval)
-    var lastHash = location.hash;
-    setInterval(function () {
-      if (location.hash !== lastHash) {
-        lastHash = location.hash;
-        if (isInChannelHash()) {
-          goToChat();
-        } else {
-          goHome();
-        }
-      }
-    }, 300);
+    // 3.1: Replace setInterval with native hashchange event (zero CPU overhead)
+    window.addEventListener("hashchange", function () {
+      if (isInChannelHash()) goToChat(); else goHome();
+    });
 
     // Sidebar click interception
     document.addEventListener("click", function (e) {
@@ -389,6 +407,13 @@
   function bootstrap() {
     createBottomNav();
     createBackButton();
+
+    // 3.3: Create loading overlay
+    var overlay = document.createElement("div");
+    overlay.className = "vemobile-loading-overlay";
+    overlay.innerHTML = '<div class="vemobile-spinner"></div>';
+    document.body.appendChild(overlay);
+
     var tagged = tagLayoutElements();
     setupNavigationDetection();
 
@@ -896,34 +921,84 @@ ${n}`})},onBeforeMessageSend(e,t){return this.unindentMsg(t)},onBeforeMessageEdi
   });
 
   // ═══════════════════════════════════════════════
-  // WakeLock (existing, from Sprint 1)
+  // 3.2 WakeLock — Event-driven via Flux, DOM polling as backup
   // ═══════════════════════════════════════════════
   reg({
     name: "WakeLock",
+    active: false,
     wl: null,
     iv: null,
+
+    acquire: async function () {
+      if (this.active) return;
+      try {
+        if ("wakeLock" in navigator) this.wl = await navigator.wakeLock.request("screen");
+        await window.__VEMOBILE__.callNative("requestWakeLock", []);
+        this.active = true;
+      } catch (e) {}
+    },
+
+    release: async function () {
+      if (!this.active) return;
+      try {
+        if (this.wl) { await this.wl.release(); this.wl = null; }
+        await window.__VEMOBILE__.callNative("releaseWakeLock", []);
+        this.active = false;
+      } catch (e) {}
+    },
+
     start: function () {
       var self = this;
-      self.iv = setInterval(function () {
-        var inCall = document.querySelector('[class*=voiceConnected],[class*=call],[class*=rtcConnection],[class*=stage]');
-        if (inCall && !self.wl) {
-          (async function () {
-            try {
-              if ("wakeLock" in navigator) self.wl = await navigator.wakeLock.request("screen");
-              await window.__VEMOBILE__.callNative("requestWakeLock", []);
-            } catch (e) {}
-          })();
-        } else if (!inCall && self.wl) {
-          (async function () {
-            try {
-              if (self.wl) { await self.wl.release(); self.wl = null; }
-              await window.__VEMOBILE__.callNative("releaseWakeLock", []);
-            } catch (e) {}
-          })();
-        }
-      }, 5000);
+
+      // Primary: Flux events (from FluxNav plugin subscriptions)
+      // If Vencord webpack is available, listen directly
+      function setupFluxWakeLock() {
+        try {
+          var V = window.Vencord || {};
+          var modules = V.Webpack ? V.Webpack.findByProps("dispatch", "subscribe") : null;
+          if (modules) {
+            var disp = modules.dispatch ? modules : (modules.default || modules);
+            if (disp.subscribe) {
+              disp.subscribe("VOICE_CHANNEL_SELECT", function (e) {
+                if (e && e.channelId) self.acquire();
+              });
+              disp.subscribe("RTC_CONNECTION_STATE", function (e) {
+                if (e && e.state === "DISCONNECTED") self.release();
+              });
+              disp.subscribe("VOICE_CHANNEL_LEAVE", function () { self.release(); });
+              return true;
+            }
+          }
+        } catch (e) {}
+        return false;
+      }
+
+      // Try Flux first
+      if (window.Vencord && window.Vencord.Webpack && window.Vencord.Webpack.onceReady) {
+        window.Vencord.Webpack.onceReady.then(function () {
+          if (!setupFluxWakeLock()) startFallbackPolling();
+        });
+      } else {
+        // Delay and retry
+        setTimeout(function () {
+          if (!setupFluxWakeLock()) startFallbackPolling();
+        }, 3000);
+      }
+
+      // Fallback: DOM-based polling (every 5s, lightweight)
+      function startFallbackPolling() {
+        self.iv = setInterval(function () {
+          var inCall = document.querySelector('[class*=voiceConnected],[class*=call],[class*=rtcConnection],[class*=stage]');
+          if (inCall && !self.active) self.acquire();
+          else if (!inCall && self.active) self.release();
+        }, 5000);
+      }
     },
-    stop: function () { clearInterval(this.iv); },
+
+    stop: function () {
+      clearInterval(this.iv);
+      this.release();
+    },
   });
 
   // ═══════════════════════════════════════════════

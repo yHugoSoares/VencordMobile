@@ -208,34 +208,84 @@
   });
 
   // ═══════════════════════════════════════════════
-  // WakeLock (existing, from Sprint 1)
+  // 3.2 WakeLock — Event-driven via Flux, DOM polling as backup
   // ═══════════════════════════════════════════════
   reg({
     name: "WakeLock",
+    active: false,
     wl: null,
     iv: null,
+
+    acquire: async function () {
+      if (this.active) return;
+      try {
+        if ("wakeLock" in navigator) this.wl = await navigator.wakeLock.request("screen");
+        await window.__VEMOBILE__.callNative("requestWakeLock", []);
+        this.active = true;
+      } catch (e) {}
+    },
+
+    release: async function () {
+      if (!this.active) return;
+      try {
+        if (this.wl) { await this.wl.release(); this.wl = null; }
+        await window.__VEMOBILE__.callNative("releaseWakeLock", []);
+        this.active = false;
+      } catch (e) {}
+    },
+
     start: function () {
       var self = this;
-      self.iv = setInterval(function () {
-        var inCall = document.querySelector('[class*=voiceConnected],[class*=call],[class*=rtcConnection],[class*=stage]');
-        if (inCall && !self.wl) {
-          (async function () {
-            try {
-              if ("wakeLock" in navigator) self.wl = await navigator.wakeLock.request("screen");
-              await window.__VEMOBILE__.callNative("requestWakeLock", []);
-            } catch (e) {}
-          })();
-        } else if (!inCall && self.wl) {
-          (async function () {
-            try {
-              if (self.wl) { await self.wl.release(); self.wl = null; }
-              await window.__VEMOBILE__.callNative("releaseWakeLock", []);
-            } catch (e) {}
-          })();
-        }
-      }, 5000);
+
+      // Primary: Flux events (from FluxNav plugin subscriptions)
+      // If Vencord webpack is available, listen directly
+      function setupFluxWakeLock() {
+        try {
+          var V = window.Vencord || {};
+          var modules = V.Webpack ? V.Webpack.findByProps("dispatch", "subscribe") : null;
+          if (modules) {
+            var disp = modules.dispatch ? modules : (modules.default || modules);
+            if (disp.subscribe) {
+              disp.subscribe("VOICE_CHANNEL_SELECT", function (e) {
+                if (e && e.channelId) self.acquire();
+              });
+              disp.subscribe("RTC_CONNECTION_STATE", function (e) {
+                if (e && e.state === "DISCONNECTED") self.release();
+              });
+              disp.subscribe("VOICE_CHANNEL_LEAVE", function () { self.release(); });
+              return true;
+            }
+          }
+        } catch (e) {}
+        return false;
+      }
+
+      // Try Flux first
+      if (window.Vencord && window.Vencord.Webpack && window.Vencord.Webpack.onceReady) {
+        window.Vencord.Webpack.onceReady.then(function () {
+          if (!setupFluxWakeLock()) startFallbackPolling();
+        });
+      } else {
+        // Delay and retry
+        setTimeout(function () {
+          if (!setupFluxWakeLock()) startFallbackPolling();
+        }, 3000);
+      }
+
+      // Fallback: DOM-based polling (every 5s, lightweight)
+      function startFallbackPolling() {
+        self.iv = setInterval(function () {
+          var inCall = document.querySelector('[class*=voiceConnected],[class*=call],[class*=rtcConnection],[class*=stage]');
+          if (inCall && !self.active) self.acquire();
+          else if (!inCall && self.active) self.release();
+        }, 5000);
+      }
     },
-    stop: function () { clearInterval(this.iv); },
+
+    stop: function () {
+      clearInterval(this.iv);
+      this.release();
+    },
   });
 
   // ═══════════════════════════════════════════════

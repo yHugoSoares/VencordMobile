@@ -160,6 +160,18 @@
     "  from{opacity:0;transform:translateX(30px)}",
     "  to{opacity:1;transform:translateX(0)}",
     "}",
+
+    // ── 3.3 Loading overlay for view transitions ──
+    ".vemobile-loading-overlay{",
+    "  display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:9998;",
+    "  background:rgba(32,34,37,0.8);justify-content:center;align-items:center",
+    "}",
+    ".vemobile-loading .vemobile-loading-overlay{display:flex}",
+    ".vemobile-spinner{",
+    "  width:32px;height:32px;border:3px solid #5865f2;border-top-color:transparent;",
+    "  border-radius:50%;animation:vemobile-spin 0.6s linear infinite",
+    "}",
+    "@keyframes vemobile-spin{to{transform:rotate(360deg)}}",
   ].join("\n");
   document.head.appendChild(CSS);
 
@@ -252,24 +264,38 @@
   }
 
   function goHome() {
+    showLoading();
     document.body.classList.remove("vemobile-chat", "vemobile-guilds", "vemobile-show-members");
     document.body.classList.add("vemobile-home");
     window.__VEMOBILE__.view = "home";
     highlightNav("channels");
+    setTimeout(hideLoading, 200);
   }
 
   function goToChat() {
+    showLoading();
     document.body.classList.remove("vemobile-home", "vemobile-guilds", "vemobile-show-members");
     document.body.classList.add("vemobile-chat");
     window.__VEMOBILE__.view = "chat";
     highlightNav("chat");
+    setTimeout(hideLoading, 200);
   }
 
   function goToGuilds() {
+    showLoading();
     document.body.classList.remove("vemobile-home", "vemobile-chat", "vemobile-show-members");
     document.body.classList.add("vemobile-guilds");
     window.__VEMOBILE__.view = "guilds";
     highlightNav("servers");
+    setTimeout(hideLoading, 200);
+  }
+
+  function showLoading() {
+    document.body.classList.add("vemobile-loading");
+  }
+
+  function hideLoading() {
+    document.body.classList.remove("vemobile-loading");
   }
 
   function highlightNav(active) {
@@ -281,18 +307,10 @@
 
   // ── Navigation detection ──
   function setupNavigationDetection() {
-    // URL hash change — use native event (3.1 later: replace setInterval)
-    var lastHash = location.hash;
-    setInterval(function () {
-      if (location.hash !== lastHash) {
-        lastHash = location.hash;
-        if (isInChannelHash()) {
-          goToChat();
-        } else {
-          goHome();
-        }
-      }
-    }, 300);
+    // 3.1: Replace setInterval with native hashchange event (zero CPU overhead)
+    window.addEventListener("hashchange", function () {
+      if (isInChannelHash()) goToChat(); else goHome();
+    });
 
     // Sidebar click interception
     document.addEventListener("click", function (e) {
@@ -389,6 +407,13 @@
   function bootstrap() {
     createBottomNav();
     createBackButton();
+
+    // 3.3: Create loading overlay
+    var overlay = document.createElement("div");
+    overlay.className = "vemobile-loading-overlay";
+    overlay.innerHTML = '<div class="vemobile-spinner"></div>';
+    document.body.appendChild(overlay);
+
     var tagged = tagLayoutElements();
     setupNavigationDetection();
 

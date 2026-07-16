@@ -48,10 +48,12 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
     ctrl.setBackgroundColor(const Color(0xFF202225));
     ctrl.setNavigationDelegate(
       NavigationDelegate(
-        onPageStarted: (_) {
+        onPageStarted: (url) {
           if (mounted) setState(() => _isLoading = true);
+          // 3.4: Inject critical CSS as early as possible (DOMContentLoaded → before paint)
+          _injectCriticalCss();
         },
-        onPageFinished: (_) {
+        onPageFinished: (url) {
           if (mounted) setState(() => _isLoading = false);
           _injectVencordBundle();
         },
@@ -106,27 +108,39 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
     return ctrl;
   }
 
-  Future<void> _injectVencordBundle() async {
-    if (_vencordInjected) return;
-    _vencordInjected = true;
-
+  /// 3.4: Inject critical CSS before Discord renders (DOMContentLoaded hook)
+  Future<void> _injectCriticalCss() async {
     try {
-      // 1. Inject CSS first (prevents flash of broken layout)
       final vemobileCss = await rootBundle.loadString('assets/vemobile.css');
-      final escapedCss = vemobileCss
+      // Escape for JS string interpolation
+      final css = vemobileCss
           .replaceAll('\\', '\\\\')
           .replaceAll("'", "\\'")
           .replaceAll('\n', '\\n')
           .replaceAll('\r', '');
       await _controller.runJavaScript("""
-        (function(){
-          var s=document.getElementById('vemobile-styles');
-          if(!s){s=document.createElement('style');s.id='vemobile-styles';document.head.appendChild(s);}
-          s.textContent='$escapedCss';
-        })();
+        // 3.4: Inject Vencord CSS on DOMContentLoaded (before Discord paints)
+        document.addEventListener('DOMContentLoaded', function injectStyles() {
+          var s = document.getElementById('vemobile-styles');
+          if (!s) {
+            s = document.createElement('style');
+            s.id = 'vemobile-styles';
+            (document.head || document.documentElement).appendChild(s);
+          }
+          s.textContent = '$css';
+        }, { once: true });
       """);
+    } catch (e) {
+      debugPrint('[Vemobile] Critical CSS pre-injection failed: $e');
+    }
+  }
 
-      // 2. Inject main Vencord bundle
+  Future<void> _injectVencordBundle() async {
+    if (_vencordInjected) return;
+    _vencordInjected = true;
+
+    try {
+      // Inject main Vencord bundle (prelude + Vencord + patches)
       final vemobileJs = await rootBundle.loadString('assets/vemobile.js');
       await _controller.runJavaScript(vemobileJs);
 
