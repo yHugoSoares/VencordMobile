@@ -54,7 +54,7 @@ class JsBridge {
           await const MethodChannel('vemobile/wakelock').invokeMethod('release');
           result = {'success': true};
         case 'getDeviceInfo':
-          result = {'platform': defaultTargetPlatform.toString(), 'appVersion': '0.1.0'};
+          result = {'platform': defaultTargetPlatform.toString(), 'appVersion': '0.2.0'};
         case 'getFCMToken':
           final t = await StorageService.getString('push_token');
           result = {'token': t ?? ''};

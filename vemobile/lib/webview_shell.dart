@@ -101,7 +101,7 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
     ctrl.setUserAgent(
       'Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 '
       '(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1 '
-      'Vemobile/0.1.0',
+      'Vemobile/0.2.0',
     );
 
     ctrl.loadRequest(Uri.parse('https://discord.com/app'));
