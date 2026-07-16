@@ -1,17 +1,19 @@
 /**
- * Vemobile Prelude — Base CSS + Viewport + Navigation Engine
- * Creates a native-like mobile UI from Discord's desktop web app.
- *
- * Pattern: Sidebar-as-home, chat-slides-in, back-button-to-return.
- * Uses JavaScript DOM tagging (data attributes) for reliable CSS targeting.
+ * Vemobile Prelude v0.2.0 — Sprint 1 hardened
+ * 
+ * Fixes applied:
+ * 1.1: Targeted DOM selectors instead of full-tree scan
+ * 1.2: Snowflake pattern for URL hash detection
+ * 1.3: Keyboard CSS hides nav bar
+ * 1.6: Proxy-based VencordNative hook
+ * 1.7: Body class (.vemobile-show-members) instead of inline styles
  */
 (function () {
   var ua = navigator.userAgent || "";
   window.__VEMOBILE__ = {
     platform: /Android/i.test(ua) ? "android" : /iPhone|iPad|iPod/i.test(ua) ? "ios" : "unknown",
-    isMobile: true,
-    version: "0.1.2",
-    view: "home", // "home" | "chat"
+    version: "0.2.0",
+    view: "home",
     sendToNative: function (t, d) {
       try { window.VemobileBridge && window.VemobileBridge.postMessage(JSON.stringify({ type: t, data: d })); } catch (e) {}
     },
@@ -20,7 +22,10 @@
     callNative: function (method, args) {
       return new Promise(function (resolve, reject) {
         var id = "nc_" + Date.now() + "_" + Math.random().toString(36).slice(2);
-        window.__VEMOBILE__.callbacks[id] = function (r) { delete window.__VEMOBILE__.callbacks[id]; r && r.error ? reject(r.error) : resolve(r && r.value); };
+        window.__VEMOBILE__.callbacks[id] = function (r) {
+          delete window.__VEMOBILE__.callbacks[id];
+          if (r && r.error) reject(r.error); else resolve(r && r.value);
+        };
         window.__VEMOBILE__.sendToNative("bridge", { id: id, method: method, args: args || [] });
       });
     },
@@ -36,103 +41,207 @@
   if (!navigator.mediaDevices.getUserMedia) {
     navigator.mediaDevices.getUserMedia = function () { return Promise.reject(new Error("WebView")); };
   }
+  if (!navigator.mediaDevices.enumerateDevices) {
+    navigator.mediaDevices.enumerateDevices = function () { return Promise.resolve([]); };
+  }
   if (!window.RTCPeerConnection) window.RTCPeerConnection = function () { throw new Error("WebRTC not available"); };
-  if (!window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = window.RTCPeerConnection;
 
-  // ── VencordNative hook ──
-  var _vcNative = null;
+  // ── VencordNative Proxy hook (1.6) ──
+  // Proxy intercepts: reads, writes, and reassignments to VencordNative
+  function wrapVencordNative(obj) {
+    return new Proxy(obj, {
+      set: function (target, key, value) {
+        if (key === "native" && value && typeof value === "object") {
+          // Patch openExternal
+          var origOpenExternal = value.openExternal;
+          value.openExternal = function (url) {
+            window.__VEMOBILE__.sendToNative("openUrl", { url: url });
+          };
+          // Patch clipboard if present
+          if (value.copy) {
+            value.copy = function (text) {
+              value.copy = function () {};
+              var f = document.createElement("textarea"); f.value = text; f.style.cssText = "position:absolute;left:-9999px";
+              document.body.appendChild(f); f.select(); document.execCommand("copy"); document.body.removeChild(f);
+            };
+          }
+        }
+        target[key] = value;
+        return true;
+      },
+      get: function (target, key) {
+        if (key === "mobile") {
+          return {
+            getPlatform: function () { return window.__VEMOBILE__.platform; },
+            requestWakeLock: function () { return window.__VEMOBILE__.callNative("requestWakeLock", []); },
+            releaseWakeLock: function () { return window.__VEMOBILE__.callNative("releaseWakeLock", []); },
+            getDeviceInfo: function () { return window.__VEMOBILE__.callNative("getDeviceInfo", []); },
+          };
+        }
+        return target[key];
+      },
+    });
+  }
+
+  var _vcStore = {};
   Object.defineProperty(window, "VencordNative", {
-    get: function () { return _vcNative; },
-    set: function (v) {
-      _vcNative = v;
-      if (_vcNative && _vcNative.native) {
-        _vcNative.native.openExternal = function (url) { window.__VEMOBILE__.sendToNative("openUrl", { url: url }); };
-      }
-      if (_vcNative) {
-        _vcNative.mobile = {
-          getPlatform: function () { return window.__VEMOBILE__.platform; },
-          requestWakeLock: function () { return window.__VEMOBILE__.callNative("requestWakeLock", []); },
-          releaseWakeLock: function () { return window.__VEMOBILE__.callNative("releaseWakeLock", []); },
-          getDeviceInfo: function () { return window.__VEMOBILE__.callNative("getDeviceInfo", []); },
-        };
-      }
+    get: function () { return _vcStore._proxy || _vcStore; },
+    set: function (val) {
+      _vcStore._proxy = wrapVencordNative(val);
     },
-    configurable: true, enumerable: true,
+    configurable: true,
+    enumerable: true,
   });
 
   // ═══════════════════════════════════════════════
-  // MOBILE LAYOUT ENGINE
+  // CSS (1.3: keyboard rule added)
   // ═══════════════════════════════════════════════
 
   var CSS = document.createElement("style");
   CSS.id = "vemobile-layout";
   CSS.textContent = [
-    // ── Global ──
     "html,body{width:100vw!important;max-width:100vw!important;overflow-x:hidden!important}",
     "#app-mount{width:100vw!important;max-width:100vw!important;overflow:hidden!important}",
     "#app-mount [class*=app]{width:100vw!important;max-width:100vw!important}",
     "*{word-wrap:break-word!important;overflow-wrap:break-word!important}",
     "img,svg{max-width:100%!important}",
-
-    // ── Safe areas ──
     ":root{--safe-top:env(safe-area-inset-top,0px);--safe-bottom:env(safe-area-inset-bottom,0px)}",
     "#app-mount{padding-top:var(--safe-top)!important;padding-bottom:calc(50px + var(--safe-bottom))!important}",
-
-    // ── Text inputs not tiny on iOS ──
     'textarea,input[type=text],input[type=email],input[type=password],[contenteditable]{font-size:16px!important}',
-
-    // ── Touch targets ──
     '[role=button],button,[class*=clickable]{min-height:44px!important;min-width:44px!important}',
-
-    // ── Smooth scrolling ──
     '[class*=scroller]{-webkit-overflow-scrolling:touch!important;overscroll-behavior:contain!important}',
-
-    // ── Hide Discord banners ──
     '[class*=mobileBanner],[class*=getAppBanner],[class*=mobileWebRTC]{display:none!important}',
-
-    // ── Modals fit screen ──
     '[class*=modal]{max-width:100vw!important;max-height:100vh!important;overflow-y:auto!important}',
 
-    // ═══ LAYOUT STATES ═══
-    // All columns except the active one are hidden via CSS.
-    // We use data-vemobile-* attributes set by JS.
-
-    // ── HOME: show sidebar (channel list), hide chat & members ──
+    // ── Layout states (data-vemobile-*) ──
     '.vemobile-home [data-vemobile-sidebar]{display:flex!important;width:100%!important;flex:1!important;min-width:0!important}',
     '.vemobile-home [data-vemobile-chat]{display:none!important}',
     '.vemobile-home [data-vemobile-members]{display:none!important}',
     '.vemobile-home [data-vemobile-guilds]{display:none!important}',
 
-    // ── CHAT: show chat, hide sidebar & members ──
     '.vemobile-chat [data-vemobile-sidebar]{display:none!important}',
     '.vemobile-chat [data-vemobile-chat]{display:flex!important;width:100%!important;flex:1!important;min-width:0!important}',
     '.vemobile-chat [data-vemobile-members]{display:none!important}',
     '.vemobile-chat [data-vemobile-guilds]{display:none!important}',
 
-    // ── GUILDS: show guild list, hide everything else ──
+    // ── 1.7 Members class toggle ──
+    '.vemobile-show-members [data-vemobile-chat]{display:none!important}',
+    '.vemobile-show-members [data-vemobile-members]{display:flex!important;width:100%!important;flex:1!important}',
+    '.vemobile-show-members [data-vemobile-sidebar]{display:none!important}',
+
     '.vemobile-guilds [data-vemobile-sidebar]{display:none!important}',
     '.vemobile-guilds [data-vemobile-chat]{display:none!important}',
     '.vemobile-guilds [data-vemobile-members]{display:none!important}',
     '.vemobile-guilds [data-vemobile-guilds]{display:flex!important;width:100%!important;flex:1!important;flex-direction:column!important;overflow-y:auto!important}',
 
-    // ── Back button in chat view ──
+    // ── Back button ──
     ".vemobile-back{display:none;position:fixed;top:var(--safe-top,0);left:0;z-index:9999;padding:8px 16px;background:rgba(30,31,34,0.95);color:#fff;border:none;font-size:14px;cursor:pointer;border-radius:0 0 8px 0;align-items:center;gap:4px}",
     ".vemobile-back svg{width:20px;height:20px}",
     ".vemobile-chat .vemobile-back{display:flex}",
 
-    // ── Bottom nav bar ──
+    // ── Bottom nav + 1.3 keyboard hide ──
     ".vemobile-nav{position:fixed;bottom:0;left:0;right:0;z-index:10000;display:flex;justify-content:space-around;align-items:center;height:50px;background:#1e1f22;border-top:1px solid #2b2d31;padding-bottom:var(--safe-bottom)}",
     ".vemobile-nav button{flex:1;height:100%;border:none;background:none;color:#949ba4;font-size:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2px;cursor:pointer;gap:1px}",
     ".vemobile-nav button.active{color:#5865f2}",
     ".vemobile-nav button svg{width:22px;height:22px}",
+    ".vemobile-keyboard-open .vemobile-nav{display:none!important}",
+
+    // ── 2.2 View transitions ──
+    "[data-vemobile-sidebar],[data-vemobile-chat],[data-vemobile-members]",
+    "{transition:opacity 0.15s ease,transform 0.15s ease}",
+    ".vemobile-home [data-vemobile-chat]{opacity:0;transform:translateX(20px)}",
+    ".vemobile-chat [data-vemobile-sidebar]{opacity:0;transform:translateX(-20px)}",
+    ".vemobile-home [data-vemobile-sidebar],.vemobile-chat [data-vemobile-chat]",
+    "{opacity:1;transform:translateX(0)}",
+
+    // ── Slide-in effect for chat (from right) ──
+    ".vemobile-chat [data-vemobile-chat]{animation:vemobile-slide-in 0.2s ease}",
+    "@keyframes vemobile-slide-in{",
+    "  from{opacity:0;transform:translateX(30px)}",
+    "  to{opacity:1;transform:translateX(0)}",
+    "}",
   ].join("\n");
   document.head.appendChild(CSS);
 
-  // ═══ DOM TAGGING + NAVIGATION ═══
+  // ═══════════════════════════════════════════════
+  // DOM TAGGING (1.1: targeted selectors)
+  // ═══════════════════════════════════════════════
+
+  function tagLayoutElements() {
+    var app = document.getElementById("app-mount");
+    if (!app) return false;
+
+    // Strategy: find the content row that has sidebar + chat + members as flex children.
+    // Look for the element containing both a nav (sidebar) and [class*=messagesWrapper] (chat).
+
+    // Find all elements containing messagesWrapper - the chat area
+    var chatContent = app.querySelector('[class*=messagesWrapper]');
+    if (!chatContent) return false;
+
+    // Walk up from the chat content to find the flex row container
+    // Discord structure: contentWrapper → chat → ... → app-mount
+    // The flex row is typically 2-4 levels up
+    var chatCandidate = chatContent;
+    for (var depth = 0; depth < 8; depth++) {
+      chatCandidate = chatCandidate.parentElement;
+      if (!chatCandidate || chatCandidate === app) break;
+
+      var cs = getComputedStyle(chatCandidate);
+      // Found a flex/grid container with siblings
+      if (cs.display === "flex" && chatCandidate.children.length >= 2) {
+        // This is likely the chat column. Tag it.
+        if (!chatCandidate.hasAttribute("data-vemobile-chat")) {
+          chatCandidate.setAttribute("data-vemobile-chat", "true");
+        }
+
+        // Look at siblings to find sidebar, guilds, members
+        var parent = chatCandidate.parentElement;
+        if (parent) {
+          for (var j = 0; j < parent.children.length; j++) {
+            var sibling = parent.children[j];
+            if (sibling === chatCandidate) continue;
+            if (sibling.hasAttribute("data-vemobile-sidebar") ||
+                sibling.hasAttribute("data-vemobile-guilds") ||
+                sibling.hasAttribute("data-vemobile-members")) continue;
+
+            // Check for nav → sidebar
+            if (sibling.querySelector('nav') && !sibling.hasAttribute("data-vemobile-sidebar")) {
+              sibling.setAttribute("data-vemobile-sidebar", "true");
+            }
+            // Check for member list content
+            else if (sibling.querySelector('[class*=member]') && !sibling.hasAttribute("data-vemobile-members")) {
+              sibling.setAttribute("data-vemobile-members", "true");
+            }
+            // Very narrow = guilds
+            else {
+              var rect = sibling.getBoundingClientRect();
+              if (rect.width > 0 && rect.width <= 100 && !sibling.hasAttribute("data-vemobile-guilds")) {
+                sibling.setAttribute("data-vemobile-guilds", "true");
+              } else if (!sibling.hasAttribute("data-vemobile-members")) {
+                sibling.setAttribute("data-vemobile-members", "true");
+              }
+            }
+          }
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // ═══════════════════════════════════════════════
+  // NAVIGATION (1.2: snowflake detection)
+  // ═══════════════════════════════════════════════
+
+  function isInChannelHash() {
+    var hash = location.hash;
+    // Match #/channels/xxx/123456789012345678 or #/channels/@me/123456789012345678
+    // Snowflake: 17-19 digit number after the last /
+    var match = hash.match(/channels\/(?:@me\/)?(\d{17,19})\b/);
+    return !!match;
+  }
 
   var backBtn = null;
-  var observerStarted = false;
-
   function createBackButton() {
     if (backBtn) return;
     backBtn = document.createElement("button");
@@ -143,21 +252,21 @@
   }
 
   function goHome() {
-    document.body.classList.remove("vemobile-chat", "vemobile-guilds");
+    document.body.classList.remove("vemobile-chat", "vemobile-guilds", "vemobile-show-members");
     document.body.classList.add("vemobile-home");
     window.__VEMOBILE__.view = "home";
     highlightNav("channels");
   }
 
   function goToChat() {
-    document.body.classList.remove("vemobile-home", "vemobile-guilds");
+    document.body.classList.remove("vemobile-home", "vemobile-guilds", "vemobile-show-members");
     document.body.classList.add("vemobile-chat");
     window.__VEMOBILE__.view = "chat";
     highlightNav("chat");
   }
 
   function goToGuilds() {
-    document.body.classList.remove("vemobile-home", "vemobile-chat");
+    document.body.classList.remove("vemobile-home", "vemobile-chat", "vemobile-show-members");
     document.body.classList.add("vemobile-guilds");
     window.__VEMOBILE__.view = "guilds";
     highlightNav("servers");
@@ -170,174 +279,41 @@
     if (b) b.classList.add("active");
   }
 
-  // ── DOM Tagger: find Discord's layout elements and tag them ──
-  function tagLayoutElements() {
-    // Walk the DOM from #app-mount to find the main flex layout
-    var app = document.getElementById("app-mount");
-    if (!app) return false;
-
-    // Find elements that look like the sidebar, chat, guilds, members
-    // Discord's layout: [guilds (72px)] [sidebar (240px)] [chat (flex:1)] [members (240px)]
-    // These are direct flex children of a container inside #app-mount
-
-    // Strategy: find the element that contains multiple flex children
-    // and has width > 0 and contains channels/messages
-    
-    // Find all flex containers in the app
-    var allElements = app.querySelectorAll("*");
-    for (var i = 0; i < allElements.length; i++) {
-      var el = allElements[i];
-      var cs = getComputedStyle(el);
-      if (cs.display !== "flex" && cs.display !== "grid") continue;
-      
-      var children = el.children;
-      if (children.length < 2 || children.length > 5) continue;
-      
-      // Check if this looks like Discord's layout container
-      var hasWideElement = false;
-      var hasNarrowElement = false;
-      var possibleSidebar = null;
-      var possibleChat = null;
-      var possibleMembers = null;
-      var possibleGuilds = null;
-      
-      for (var j = 0; j < children.length; j++) {
-        var child = children[j];
-        var childStyle = getComputedStyle(child);
-        var rect = child.getBoundingClientRect();
-        
-        // Very narrow (under 100px) = guilds list
-        if (rect.width > 0 && rect.width <= 100 && childStyle.display !== "none") {
-          possibleGuilds = child;
-          hasNarrowElement = true;
-        }
-        // Medium (100-400px) = sidebar or members
-        else if (rect.width > 100 && rect.width <= 500 && childStyle.display !== "none") {
-          // Check if it has a navigation list inside
-          if (child.querySelector('nav') || child.querySelector('[class*=item]')) {
-            possibleSidebar = child;
-          } else {
-            possibleMembers = child;
-          }
-        }
-        // Wide (flex: 1) = chat
-        else if (rect.width > 300 && childStyle.flexGrow !== "0" && childStyle.display !== "none") {
-          possibleChat = child;
-          hasWideElement = true;
-        }
-      }
-      
-      // If we found both sidebar and chat, this is probably the layout container
-      if (possibleSidebar && possibleChat) {
-        if (possibleSidebar && !possibleSidebar.hasAttribute("data-vemobile-sidebar")) {
-          possibleSidebar.setAttribute("data-vemobile-sidebar", "true");
-        }
-        if (possibleChat && !possibleChat.hasAttribute("data-vemobile-chat")) {
-          possibleChat.setAttribute("data-vemobile-chat", "true");
-        }
-        if (possibleMembers && !possibleMembers.hasAttribute("data-vemobile-members")) {
-          possibleMembers.setAttribute("data-vemobile-members", "true");
-        }
-        if (possibleGuilds && !possibleGuilds.hasAttribute("data-vemobile-guilds")) {
-          possibleGuilds.setAttribute("data-vemobile-guilds", "true");
-        }
-        return true; // Found it!
-      }
-    }
-    
-    // Fallback: try to find sidebar and chat by their content
-    // Sidebar usually has a navigation element with channel list items
-    var navCandidates = app.querySelectorAll('nav[class*=sidebar], [class*=sidebar] nav');
-    var chatCandidate = app.querySelector('[class*=chat]:not([class*=sidebar])');
-    
-    if (navCandidates.length > 0) {
-      var sidebarEl = navCandidates[0].parentElement || navCandidates[0];
-      // Walk up to find the actual sidebar wrapper (the flex child)
-      while (sidebarEl && sidebarEl.parentElement && sidebarEl.parentElement.children.length <= 5) {
-        sidebarEl = sidebarEl.parentElement;
-      }
-      if (sidebarEl) sidebarEl.setAttribute("data-vemobile-sidebar", "true");
-    }
-    
-    if (chatCandidate) {
-      // Walk up to find the actual chat wrapper
-      var chatEl = chatCandidate;
-      while (chatEl && chatEl.parentElement && chatEl.parentElement !== app && chatEl.parentElement.children.length <= 5) {
-        chatEl = chatEl.parentElement;
-      }
-      if (chatEl) chatEl.setAttribute("data-vemobile-chat", "true");
-    }
-    
-    return !!(document.querySelector("[data-vemobile-sidebar]") && document.querySelector("[data-vemobile-chat]"));
-  }
-
   // ── Navigation detection ──
-  // Watch for: URL hash changes, clicks on sidebar items, DOM mutations in chat
   function setupNavigationDetection() {
-    if (observerStarted) return;
-    observerStarted = true;
-
-    // 1. URL hash change detection (Discord uses hash routing)
+    // URL hash change — use native event (3.1 later: replace setInterval)
     var lastHash = location.hash;
     setInterval(function () {
       if (location.hash !== lastHash) {
         lastHash = location.hash;
-        // If hash contains a channel or DM path, go to chat
-        if (location.hash.indexOf("/channels/") >= 0) {
+        if (isInChannelHash()) {
           goToChat();
-        } else if (location.hash.indexOf("/channels") >= 0 || location.hash === "" || location.hash === "#/") {
+        } else {
           goHome();
         }
       }
     }, 300);
 
-    // 2. Click detection on sidebar navigation items
+    // Sidebar click interception
     document.addEventListener("click", function (e) {
-      var target = e.target;
-      // Look for clicks on channel/DM list items inside the sidebar
       var sidebar = document.querySelector("[data-vemobile-sidebar]");
-      if (sidebar && sidebar.contains(target)) {
-        // Check if the click was on a navigable item (link, list item, etc.)
-        var navItem = target.closest('a, [class*=item], [class*=link], li[role], [role=link], [role=button]');
+      if (sidebar && sidebar.contains(e.target)) {
+        var navItem = e.target.closest('a, [class*=item], [class*=link], li[role], [role=link], [role=button]');
         if (navItem) {
-          // Delay to let Discord's router update the URL
           setTimeout(function () {
-            if (location.hash.indexOf("/channels/") >= 0) {
-              goToChat();
-            }
+            if (isInChannelHash()) goToChat();
           }, 200);
         }
       }
-      
-      // Clicks on guild/server icons
-      var guildsList = document.querySelector("[data-vemobile-guilds]");
-      if (guildsList && guildsList.contains(target)) {
-        var guildItem = target.closest('[class*=guild], [class*=wrapper], [class*=item], [data-list-item-id]');
-        if (guildItem) {
-          setTimeout(function () {
-            goHome(); // After selecting a guild, show the channel list
-          }, 200);
-        }
+      var guilds = document.querySelector("[data-vemobile-guilds]");
+      if (guilds && guilds.contains(e.target)) {
+        var item = e.target.closest('[class*=guild], [class*=wrapper], [class*=item], [data-list-item-id]');
+        if (item) setTimeout(goHome, 200);
       }
     }, true);
-
-    // 3. MutationObserver — detect when messages appear in chat
-    var chatObserver = new MutationObserver(function () {
-      if (window.__VEMOBILE__.view === "home") {
-        // Check if messages are visible (Discord might auto-navigate)
-        var messages = document.querySelector('[class*=messagesWrapper]');
-        if (messages && getComputedStyle(messages.parentElement || messages).display !== "none") {
-          // Something navigated, check if we should switch to chat
-          if (location.hash.indexOf("/channels/") >= 0) {
-            goToChat();
-          }
-        }
-      }
-    });
-    chatObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
   }
 
-  // ── Bottom Navigation Bar ──
+  // ── Bottom nav (1.7: class-based members toggle) ──
   var navBar = null;
   function createBottomNav() {
     if (navBar || document.querySelector(".vemobile-nav")) return;
@@ -354,67 +330,55 @@
     document.getElementById("vemobile-btn-servers").onclick = goToGuilds;
     document.getElementById("vemobile-btn-channels").onclick = goHome;
     document.getElementById("vemobile-btn-members").onclick = function () {
-      // Toggle member list visibility in chat view
-      var ml = document.querySelector("[data-vemobile-members]");
-      if (ml) {
-        var isVisible = ml.style.display !== "none" && getComputedStyle(ml).display !== "none";
-        ml.style.display = isVisible ? "none" : "flex";
-        ml.style.width = isVisible ? "" : "100%";
-        var chat = document.querySelector("[data-vemobile-chat]");
-        if (chat) chat.style.display = isVisible ? "flex" : "none";
+      // 1.7: Use body class instead of inline styles
+      if (document.body.classList.contains("vemobile-show-members")) {
+        goHome();
+      } else {
+        document.body.classList.remove("vemobile-chat", "vemobile-guilds", "vemobile-home");
+        document.body.classList.add("vemobile-show-members");
+        highlightNav("members");
       }
-      highlightNav("members");
     };
     document.getElementById("vemobile-btn-settings").onclick = function () {
       goHome();
-      // Try to open Discord settings
       setTimeout(function () {
-        var btn = document.querySelector('[class*=sidebar] [aria-label="User Settings"], [aria-label="User Settings"]');
-        if (btn) btn.click();
+        // Try Vencord settings first, fall back to Discord settings
+        if (window.Vencord && window.Vencord.Api) {
+          var btn = document.querySelector('[aria-label="Open Settings"],[aria-label="User Settings"]');
+          if (btn) btn.click();
+        }
       }, 300);
     };
   }
 
-  // ── Swipe gesture for back navigation ──
-  var touchStartX = 0, touchStartY = 0, touchMoved = false;
+  // ── Swipe ──
+  var tsx = 0, tsy = 0, tm = false;
   document.addEventListener("touchstart", function (e) {
     if (e.touches.length !== 1) return;
-    touchStartX = e.touches[0].clientX;
-    touchStartY = e.touches[0].clientY;
-    touchMoved = false;
+    tsx = e.touches[0].clientX; tsy = e.touches[0].clientY; tm = false;
   }, { passive: true });
-  document.addEventListener("touchmove", function (e) {
-    touchMoved = true;
-  }, { passive: true });
+  document.addEventListener("touchmove", function (e) { tm = true; }, { passive: true });
   document.addEventListener("touchend", function (e) {
-    if (!touchMoved) return;
-    var dx = e.changedTouches[0].clientX - touchStartX;
-    var dy = e.changedTouches[0].clientY - touchStartY;
+    if (!tm) return;
+    var dx = e.changedTouches[0].clientX - tsx;
+    var dy = e.changedTouches[0].clientY - tsy;
     if (Math.abs(dx) <= Math.abs(dy) || Math.abs(dx) < 80) return;
-    // Swipe right from left edge → back to home
-    if (dx > 0 && touchStartX < 50 && window.__VEMOBILE__.view === "chat") {
+    if (dx > 0 && tsx < 50 && (window.__VEMOBILE__.view === "chat" || document.body.classList.contains("vemobile-show-members"))) {
       goHome();
-    }
-    // Swipe left on home → try to go to chat if there's a current channel
-    if (dx < 0 && window.__VEMOBILE__.view === "home") {
-      if (location.hash.indexOf("/channels/") >= 0) {
-        goToChat();
-      }
     }
   }, { passive: true });
 
-  // ── Keyboard handling ──
+  // ── Keyboard (1.3: hides nav via CSS, just toggles class) ──
   if (window.visualViewport) {
     window.visualViewport.addEventListener("resize", function () {
-      var keyboardOpen = window.visualViewport.height < window.innerHeight * 0.8;
-      document.body.classList.toggle("vemobile-keyboard-open", keyboardOpen);
+      document.body.classList.toggle("vemobile-keyboard-open", window.visualViewport.height < window.innerHeight * 0.8);
     });
   }
 
   // ── Call interception ──
   var origAlert = window.alert;
   window.alert = function (msg) {
-    if (typeof msg === "string" && /not support|not available|RTC|WebRTC|voice|call|getUserMedia/i.test(msg)) {
+    if (typeof msg === "string" && /voice|video|call|not (?:support|available|work|compatible)|RTC|getUserMedia|microphone|camera/i.test(msg)) {
       window.__VEMOBILE__.sendToNative("callUnsupported", { message: msg });
       return;
     }
@@ -429,29 +393,20 @@
     setupNavigationDetection();
 
     if (!tagged) {
-      // Retry: DOM might not be fully rendered yet
       var retries = 0;
-      var retryInterval = setInterval(function () {
-        if (tagLayoutElements() || ++retries > 30) {
-          clearInterval(retryInterval);
-        }
+      var retry = setInterval(function () {
+        if (tagLayoutElements() || ++retries > 30) clearInterval(retry);
       }, 500);
     }
 
-    // Set initial view based on URL
-    if (location.hash.indexOf("/channels/") >= 0) {
-      goToChat();
-    } else {
-      goHome();
-    }
+    if (isInChannelHash()) goToChat(); else goHome();
   }
 
-  // Start after a short delay to let Discord render its initial UI
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", function () { setTimeout(bootstrap, 1000); });
   } else {
     setTimeout(bootstrap, 1000);
   }
 
-  console.log("[Vemobile] Prelude v0.1.2 loaded");
+  console.log("[Vemobile] Prelude v0.2.0 loaded (sprint 1)");
 })();

@@ -59,22 +59,32 @@ class _WebViewShellState extends State<WebViewShell> with WidgetsBindingObserver
           debugPrint('[Vemobile] Web error: ${error.description}');
         },
         onNavigationRequest: (request) {
-          final url = request.url.toLowerCase();
-          // Allow Discord domains
-          if (url.contains('discord.com') ||
-              url.contains('discordapp.com') ||
-              url.contains('discordapp.net') ||
-              url.contains('discord.gg') ||
-              url.contains('discord.media') ||
-              url.contains('discordcdn.com') ||
-              url.contains('hcaptcha.com') ||
-              url.contains('recaptcha.net') ||
-              url.contains('google.com/recaptcha') ||
-              url.contains('cloudflare.com')) {
+          // 1.5: Allow same-origin (discord.com), block cross-origin
+          final url = request.url;
+          final currentUri = Uri.tryParse(url);
+          if (currentUri == null) return NavigationDecision.prevent;
+
+          // Always allow navigation within discord.com domain
+          if (currentUri.host == 'discord.com' ||
+              currentUri.host.endsWith('.discord.com') ||
+              currentUri.host.endsWith('.discordapp.com') ||
+              currentUri.host.endsWith('.discordapp.net') ||
+              currentUri.host.endsWith('.discord.gg') ||
+              currentUri.host.endsWith('.discord.media') ||
+              currentUri.host.endsWith('.discordcdn.com')) {
             return NavigationDecision.navigate;
           }
-          // Block all external links — open in native browser
-          _openExternalUrl(request.url);
+
+          // Also allow captcha providers
+          if (currentUri.host.endsWith('hcaptcha.com') ||
+              currentUri.host.endsWith('recaptcha.net') ||
+              currentUri.host.endsWith('google.com/recaptcha') ||
+              currentUri.host.endsWith('cloudflare.com')) {
+            return NavigationDecision.navigate;
+          }
+
+          // Everything else: open in native browser
+          _openExternalUrl(url);
           return NavigationDecision.prevent;
         },
       ),

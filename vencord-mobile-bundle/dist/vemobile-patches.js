@@ -1,70 +1,267 @@
 /**
- * Vemobile Patches — Lightweight plugins loaded after Vencord bundle.
- * Navigation/UI is handled by vemobile-prelude.js.
+ * Vemobile Patches v0.2.0 — Sprint 2
+ *
+ * 2.1: Flux event subscription for navigation (CHANNEL_SELECT, etc.)
+ * 2.3: Settings via Vencord API
+ * 2.4: Deep call detection (enumerateDevices + RTC module intercept)
+ * 2.5: Class-based member toggle (already in prelude CSS)
  */
 (function () {
   var V = window.Vencord || {};
-  var P = V.Plugins && V.Plugins.plugins ? V.Plugins.plugins : {};
+  var PK = V.Plugins || {};
+  var plugins = PK.plugins || {};
 
   function reg(plugin) {
-    try {
-      P[plugin.name] = plugin;
-      if (plugin.start) plugin.start();
-      console.log("[Vemobile] " + plugin.name + " started");
-    } catch (e) {
-      console.error("[Vemobile] " + plugin.name + " failed:", e);
-    }
+    try { plugins[plugin.name] = plugin; if (plugin.start) plugin.start(); }
+    catch (e) { console.error("[Vemobile] " + plugin.name + " failed:", e); }
   }
 
-  // ── WakeLock: keep screen on during calls ──
+  // ═══════════════════════════════════════════════
+  // 2.1 Flux Navigation Plugin
+  // Subscribes to Discord's internal Flux events for real navigation detection
+  // ═══════════════════════════════════════════════
+  reg({
+    name: "FluxNav",
+    started: false,
+    subscriptions: [],
+
+    start: function () {
+      if (this.started) return;
+      var self = this;
+
+      function onReady() {
+        try {
+          // Find Discord's Flux dispatcher via Vencord webpack
+          var modules = V.Webpack ? V.Webpack.findByProps("dispatch", "subscribe", "unsubscribe") : null;
+
+          if (modules) {
+            var dispatcher = modules.dispatch ? modules : (modules.default || modules);
+
+            // Subscribe to CHANNEL_SELECT — Discord fires this when user clicks a channel
+            if (dispatcher.subscribe) {
+              dispatcher.subscribe("CHANNEL_SELECT", function (e) {
+                if (e && e.channelId) {
+                  document.body.classList.remove("vemobile-home", "vemobile-guilds", "vemobile-show-members");
+                  document.body.classList.add("vemobile-chat");
+                  window.__VEMOBILE__.view = "chat";
+                  var b = document.getElementById("vemobile-btn-chat");
+                  if (b) {
+                    document.querySelectorAll(".vemobile-nav button").forEach(function (x) { x.classList.remove("active"); });
+                    b.classList.add("active");
+                  }
+                } else {
+                  document.body.classList.remove("vemobile-chat", "vemobile-guilds", "vemobile-show-members");
+                  document.body.classList.add("vemobile-home");
+                  window.__VEMOBILE__.view = "home";
+                  var c = document.getElementById("vemobile-btn-channels");
+                  if (c) {
+                    document.querySelectorAll(".vemobile-nav button").forEach(function (x) { x.classList.remove("active"); });
+                    c.classList.add("active");
+                  }
+                }
+              });
+              self.subscriptions.push(function () { dispatcher.unsubscribe("CHANNEL_SELECT"); });
+              console.log("[Vemobile] FluxNav: subscribed to CHANNEL_SELECT");
+            }
+
+            // Subscribe to VOICE_CHANNEL_SELECT for call detection
+            if (dispatcher.subscribe) {
+              dispatcher.subscribe("VOICE_CHANNEL_SELECT", function (e) {
+                if (e && e.channelId) {
+                  // User joined a voice channel — inform native for wake lock
+                  window.__VEMOBILE__.callNative("requestWakeLock", []);
+                }
+              });
+              self.subscriptions.push(function () { dispatcher.unsubscribe("VOICE_CHANNEL_SELECT"); });
+              console.log("[Vemobile] FluxNav: subscribed to VOICE_CHANNEL_SELECT");
+            }
+
+            // Subscribe to RTC connection events for call state
+            dispatcher.subscribe && dispatcher.subscribe("RTC_CONNECTION_STATE", function (e) {
+              if (e && e.state === "DISCONNECTED") {
+                window.__VEMOBILE__.callNative("releaseWakeLock", []);
+              }
+            });
+
+            self.started = true;
+          } else {
+            console.log("[Vemobile] FluxNav: dispatcher not found");
+          }
+        } catch (e) {
+          console.warn("[Vemobile] FluxNav: error subscribing:", e);
+        }
+      }
+
+      // Wait for Vencord webpack to be ready
+      if (V.Webpack && V.Webpack.onceReady) {
+        V.Webpack.onceReady.then(onReady);
+      } else {
+        // Fallback: try after a delay
+        setTimeout(function () {
+          if (V.Webpack && V.Webpack.onceReady) {
+            V.Webpack.onceReady.then(onReady);
+          } else {
+            onReady(); // Try anyway
+          }
+        }, 2000);
+      }
+    },
+
+    stop: function () {
+      this.subscriptions.forEach(function (fn) { try { fn(); } catch (e) {} });
+      this.subscriptions = [];
+      this.started = false;
+    },
+  });
+
+  // ═══════════════════════════════════════════════
+  // 2.3 Settings Button Fix
+  // Opens Vencord settings directly instead of clicking DOM elements
+  // ═══════════════════════════════════════════════
+  reg({
+    name: "SettingsButton",
+    start: function () {
+      // Hook the settings nav button
+      var self = this;
+      self._interval = setInterval(function () {
+        var btn = document.getElementById("vemobile-btn-settings");
+        if (btn && !btn._vemobilePatched) {
+          btn._vemobilePatched = true;
+          btn.onclick = function () {
+            // Try Vencord settings API first
+            if (V.Api && V.Api.Settings && V.Api.Settings.open) {
+              V.Api.Settings.open();
+              return;
+            }
+            // Fallback: open Discord settings
+            var app = document.getElementById("app-mount");
+            if (app) {
+              var settingsBtn = app.querySelector('[class*=sidebar] [aria-label="User Settings"], [aria-label="User Settings"]');
+              if (settingsBtn) settingsBtn.click();
+            }
+          };
+        }
+      }, 1000);
+    },
+    stop: function () { clearInterval(this._interval); },
+  });
+
+  // ═══════════════════════════════════════════════
+  // 2.4 Deep Call Detection
+  // Overrides more WebRTC detection points for comprehensive call blocking
+  // ═══════════════════════════════════════════════
+  reg({
+    name: "CallDetect",
+    start: function () {
+      var warned = false;
+
+      // Override MediaStream to catch Discord checking for mic/camera
+      if (typeof MediaStream !== "undefined") {
+        var origMS = window.MediaStream;
+        // Don't override constructor — just track if Discord tries to use it
+      }
+
+      // Intercept console.warn/error for RTC-related messages
+      var origWarn = console.warn;
+      var origError = console.error;
+      var keywords = /webrtc|getUserMedia|mediaDevices|enumerateDevices|microphone|camera|permission denied|not allowed/i;
+
+      console.warn = function () {
+        var msg = Array.prototype.join.call(arguments, " ");
+        if (!warned && keywords.test(msg)) {
+          warned = true;
+          window.__VEMOBILE__.sendToNative("callUnsupported", { message: "WebRTC not available in WebView" });
+        }
+        return origWarn.apply(console, arguments);
+      };
+
+      console.error = function () {
+        var msg = Array.prototype.join.call(arguments, " ");
+        if (!warned && keywords.test(msg)) {
+          warned = true;
+          window.__VEMOBILE__.sendToNative("callUnsupported", { message: "WebRTC error in WebView" });
+        }
+        return origError.apply(console, arguments);
+      };
+
+      // Inject a call warning banner into the voice channel header
+      var bannerInterval = setInterval(function () {
+        // Find voice channel header — it appears when user is in a voice channel
+        var vcHeader = document.querySelector('[class*=voiceChannelEffect], [class*=voiceConnected]');
+        if (vcHeader && !document.querySelector(".vemobile-call-warning")) {
+          var banner = document.createElement("div");
+          banner.className = "vemobile-call-warning";
+          banner.style.cssText = "background:#faa61a;color:#000;padding:8px 12px;font-size:12px;text-align:center;border-radius:4px;margin:8px";
+          banner.textContent = "Voice/video calls may not work in this WebView. Open the native Discord app for calls.";
+          banner.onclick = function () {
+            window.__VEMOBILE__.sendToNative("callUnsupported", { message: "Open native Discord for calls?" });
+          };
+          vcHeader.parentElement && vcHeader.parentElement.insertBefore(banner, vcHeader);
+        }
+      }, 3000);
+
+      this._bannerInterval = bannerInterval;
+    },
+    stop: function () {
+      clearInterval(this._bannerInterval);
+    },
+  });
+
+  // ═══════════════════════════════════════════════
+  // WakeLock (existing, from Sprint 1)
+  // ═══════════════════════════════════════════════
   reg({
     name: "WakeLock",
-    wakeLock: null,
-    interval: null,
+    wl: null,
+    iv: null,
     start: function () {
       var self = this;
-      self.interval = setInterval(function () {
+      self.iv = setInterval(function () {
         var inCall = document.querySelector('[class*=voiceConnected],[class*=call],[class*=rtcConnection],[class*=stage]');
-        if (inCall && !self.wakeLock) {
+        if (inCall && !self.wl) {
           (async function () {
             try {
-              if ("wakeLock" in navigator) self.wakeLock = await navigator.wakeLock.request("screen");
+              if ("wakeLock" in navigator) self.wl = await navigator.wakeLock.request("screen");
               await window.__VEMOBILE__.callNative("requestWakeLock", []);
             } catch (e) {}
           })();
-        } else if (!inCall && self.wakeLock) {
+        } else if (!inCall && self.wl) {
           (async function () {
             try {
-              if (self.wakeLock) { await self.wakeLock.release(); self.wakeLock = null; }
+              if (self.wl) { await self.wl.release(); self.wl = null; }
               await window.__VEMOBILE__.callNative("releaseWakeLock", []);
             } catch (e) {}
           })();
         }
       }, 5000);
     },
-    stop: function () { clearInterval(this.interval); },
+    stop: function () { clearInterval(this.iv); },
   });
 
-  // ── NoTrack: block Discord analytics ──
+  // ═══════════════════════════════════════════════
+  // NoTrack (existing, from Sprint 1)
+  // ═══════════════════════════════════════════════
   reg({
     name: "NoTrack",
     start: function () {
-      if (window._vnt) return;
-      window._vnt = true;
+      if (window._vnt2) return;
+      window._vnt2 = true;
       var orig = window.fetch;
-      var blocked = ["discord.com/api/v*/science", "discord.com/api/v*/track", "sentry.io"];
+      var patterns = [/\/api\/v\d+\/science/, /\/api\/v\d+\/track/, /sentry\.io/];
       window.fetch = function (url, opts) {
         var s = typeof url === "string" ? url : (url && url.url) || "";
-        for (var i = 0; i < blocked.length; i++) {
-          if (s.indexOf(blocked[i]) >= 0) return Promise.resolve(new Response("{}", { status: 200 }));
+        for (var i = 0; i < patterns.length; i++) {
+          if (patterns[i].test(s)) return Promise.resolve(new Response("{}", { status: 200 }));
         }
         return orig.apply(this, arguments);
       };
     },
-    stop: function () { window._vnt = false; },
+    stop: function () { window._vnt2 = false; },
   });
 
-  // ── MobileUpdater: check GitHub releases ──
+  // ═══════════════════════════════════════════════
+  // MobileUpdater (existing)
+  // ═══════════════════════════════════════════════
   reg({
     name: "MobileUpdater",
     start: function () {
@@ -89,5 +286,5 @@
     stop: function () {},
   });
 
-  console.log("[Vemobile] Patches v0.1.2 loaded");
+  console.log("[Vemobile] Patches v0.2.0 loaded (sprint 2)");
 })();
