@@ -1,5 +1,27 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "deepseek/deepseek-v4-pro",
-  "small_model": "deepseek/deepseek-v4-flash"
+  "small_model": "deepseek/deepseek-v4-flash",
+  "agent": {
+    "reviewer": {
+      "description": "Reviews code for bugs, security, and style in Dart + JS",
+      "mode": "subagent"
+    },
+    "finalizer": {
+      "description": "Documents the complete session pipeline",
+      "mode": "subagent"
+    },
+    "bundler": {
+      "description": "Builds and updates the JS mod bundle",
+      "mode": "subagent"
+    },
+    "flutter-dev": {
+      "description": "Develops and fixes the Flutter shell app",
+      "mode": "subagent"
+    },
+    "releaser": {
+      "description": "Creates releases, tags versions, manages CI",
+      "mode": "subagent"
+    }
+  }
 }
